@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Scenario collaboration",
+    "description": "Collaborate with Codex and DeepSeek using cross-verification, owner coordination, scenario memory, and request provenance. Includes the /codex command."
+  }
+}

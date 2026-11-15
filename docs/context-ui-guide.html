@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>上下文界面图解使用指南 · 场景协作</title>
+  <style>
+    :root{color-scheme:light;--ink:#203047;--muted:#64748b;--line:#dce5ef;--accent:#245bb5;--paper:#fff;--tint:#f1f6fd}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:#f5f7fa;color:var(--ink);font:16px/1.85 "Segoe UI","Microsoft YaHei",sans-serif}a{color:var(--accent);text-underline-offset:3px}button{font:inherit;cursor:pointer}.layout{max-width:1440px;margin:auto;display:grid;grid-template-columns:210px minmax(0,1fr);gap:38px;padding:42px 28px 70px}aside{position:sticky;top:32px;align-self:start;font-size:14px}aside b{display:block;margin-bottom:12px}aside a{display:block;text-decoration:none;padding:6px 0;color:var(--muted)}aside a:hover{color:var(--accent)}aside small{display:block;color:var(--muted);margin-top:20px}main{min-width:0;background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:38px 42px}header{border-bottom:1px solid var(--line);padding-bottom:22px}.eyebrow{font-size:13px;color:var(--accent);letter-spacing:1px;margin:0 0 8px}h1{font-size:32px;line-height:1.4;margin:0 0 12px;letter-spacing:-.5px}h2{font-size:24px;line-height:1.5;margin:0 0 18px}h3{font-size:18px;line-height:1.6;margin:24px 0 10px}p{margin:10px 0 16px}section{padding-top:36px}li{padding-left:3px;margin:7px 0}ol,ul{padding-left:24px}.lead{font-size:18px;color:#42556d}.meta,.small{font-size:13px;color:var(--muted)}.tools{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.tools button{border:1px solid var(--line);border-radius:7px;background:white;color:var(--ink);padding:6px 14px}.callout{background:var(--tint);border-left:4px solid var(--accent);padding:15px 20px;margin:20px 0;border-radius:0 8px 8px 0}.callout p:last-child{margin-bottom:0}.callout.warn{border-color:#b77517;background:#fff8eb}.route{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.route span{background:#f0f4f9;border:1px solid var(--line);border-radius:7px;padding:7px 12px;font-size:14px}.route i{font-style:normal;color:var(--muted)}figure{margin:22px 0 26px}figure .shot{position:relative;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:white;line-height:0}figure a{display:block}figure img{display:block;width:100%;height:auto}figure.portrait{max-width:700px;margin-left:auto;margin-right:auto}figcaption{color:var(--muted);font-size:13px;line-height:1.7;margin-top:9px}.tag{font-size:12px;line-height:1.5;border-radius:4px;padding:2px 6px;margin-right:6px;display:inline-block;font-weight:600}.real{color:#1d6a50;background:#e7f5ed}.demo{color:#885415;background:#fff0d6}.pin{position:absolute;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;border:2px solid #fff;background:#d74829;color:white;font:700 14px/1 sans-serif;box-shadow:0 1px 5px #1b2e4340;pointer-events:none;transform:translate(-50%,-50%)}.num{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#d74829;color:white;font:700 13px/1 sans-serif}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.8;margin:15px 0}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:11px 12px}th{background:#f4f7fb;font-weight:600}td:first-child{font-weight:600}code,kbd{font:13px/1.7 Consolas,"Microsoft YaHei",monospace;background:#f1f4f8;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}strong{font-weight:650}.swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px}.example{border:1px solid var(--line);border-radius:9px;padding:16px 20px;margin:16px 0}.example h3{margin-top:0}.example p:last-child{margin-bottom:0}.check{background:#eef8f3;border-left:3px solid #3a8b67;padding:10px 15px}details.faq{border-bottom:1px solid var(--line);padding:13px 0}details.faq summary{font-weight:650;cursor:pointer}footer{border-top:1px solid var(--line);margin-top:36px;padding-top:18px;color:var(--muted);font-size:13px}
+    @media(min-width:1600px){.layout{max-width:1580px}main{padding:42px 50px}}
+    @media(max-width:900px){.layout{display:block;padding:18px 12px}aside{position:static;margin-bottom:20px}aside a{display:inline-block;margin-right:15px}aside small{display:none}main{padding:24px 20px}h1{font-size:27px}.pin{width:22px;height:22px;font-size:12px}}
+    @media print{@page{size:A4;margin:16mm}html{scroll-behavior:auto}body{background:white;font-size:11pt;line-height:1.7}.layout{display:block;max-width:none;padding:0}aside,.tools{display:none}main{padding:0;border:0;border-radius:0}h1{font-size:24pt}h2{font-size:17pt;break-after:avoid}h3{font-size:13pt;break-after:avoid}section{padding-top:24px}p{orphans:3;widows:3}figure,.callout,.example,tr{break-inside:avoid}figure img{max-height:155mm;object-fit:contain;object-position:left top}figure.portrait{max-width:118mm}figcaption,.meta,.small,table{font-size:9pt}a{color:inherit;text-decoration:none}th,td{padding:7px 8px}thead{display:table-header-group}.pin{width:20px;height:20px;font-size:11px;print-color-adjust:exact}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside aria-label="文档目录">
+    <b>上下文使用指南</b>
+    <a href="#start">1. 第一次打开</a>
+    <a href="#map">2. 界面各区怎么看</a>
+    <a href="#numbers">3. Token 和耗时</a>
+    <a href="#browser">4. 查成员收到的材料</a>
+    <a href="#trend">5. 查上下文为什么变长</a>
+    <a href="#dna">6. 看输入顺序</a>
+    <a href="#memory">7. 查记忆及其版本</a>
+    <a href="#activity">8. 查文件和命令</a>
+    <a href="#faq">9. 常见问题与速查</a>
+    <small>对应当前插件界面<br>更新于 2026 年 11 月 15 日<br>7 张界面截图</small>
+  </aside>
+  <main>
+    <header>
+      <p class="eyebrow">场景协作 · 图解教程</p>
+      <h1>上下文界面怎么看</h1>
+      <p class="lead">用它回答三个问题：成员这一步收到了什么材料，输入为什么增加，以及结论背后有哪些操作记录。</p>
+      <div class="tools"><button type="button" onclick="window.print()">打印或另存为 PDF</button><a href="plugin-guide.html">插件完整介绍与使用手册</a><span class="meta">适用：DSH 面板及插件浏览器入口 · 2026-11-15</span></div>
+      <p class="small">图 1—4 来自已有场景的真实运行记录。图 5—7 为实际界面加载的预设教学数据，未保存到你的场景，也未调用模型、读写示例文件或执行示例命令。截图可点击放大。</p>
+    </header>
+
+    <section id="start">
+      <h2>1. 第一次打开，先按这条路线看</h2>
+      <ol>
+        <li>在场景协作工作区顶部点击<strong>上下文</strong>。也可以从对话右侧的成员框点击<strong>查看实际采用的上下文</strong>，直接按该成员筛选。</li>
+        <li>第一次建议在右上角<strong>成员</strong>中选择 Codex 或 DeepSeek，先看一位成员的记录。</li>
+        <li>先看<strong>记录范围</strong>，确认当前保存的是原生请求还是阶段快照。</li>
+        <li>在<strong>上下文浏览器</strong>顶部选择需要查看的步骤，再展开分类和具体条目。</li>
+      </ol>
+      <div class="route" aria-label="推荐阅读路线"><span>选成员</span><i>→</i><span>看记录范围</span><i>→</i><span>选请求步骤</span><i>→</i><span>展开输入材料</span><i>→</i><span>核对输出与来源</span></div>
+      <div class="callout"><strong>先区分上下文与记忆。</strong><p>上下文是某次请求交给成员的材料，可能包含任务、记忆、技能、历史和协作者结果。记忆是场景里长期保存、供后续任务选用的知识。保存了记忆，不代表每次请求都会采用它。</p></div>
+    </section>
+
+    <section id="map">
+      <h2>2. 界面各区怎么看</h2>
+      <figure>
+        <div class="shot">
+          <a href="images/context-01-overview.png" target="_blank" rel="noopener"><img src="images/context-01-overview.png" alt="真实场景的上下文总览，显示统计、范围、Token、耗时、当前上下文、趋势和浏览器" width="1440" height="1080"></a>
+          <span class="pin" style="left:87%;top:13%">1</span><span class="pin" style="left:71.5%;top:17%">2</span><span class="pin" style="left:98%;top:17%">3</span><span class="pin" style="left:48%;top:39%">4</span><span class="pin" style="left:98%;top:39%">5</span><span class="pin" style="left:48%;top:59.5%">6</span><span class="pin" style="left:98%;top:59.5%">7</span><span class="pin" style="left:48%;top:81.5%">8</span>
+        </div>
+        <figcaption><span class="tag real">真实记录</span>图 1 · 全部成员视图。编号对应下表。截图是宽屏布局；面板较窄时，卡片会改为上下排列。继续向下滚动，可看到上下文事件、文件活动和命令执行。</figcaption>
+      </figure>
+      <div class="table-wrap"><table>
+        <thead><tr><th>区域</th><th>回答什么问题</th><th>怎么读</th></tr></thead>
+        <tbody>
+          <tr><td><span class="num">1</span> 成员与刷新</td><td>现在看谁的记录？</td><td>“全部成员”汇总团队；选某位成员后查看其记录。任务运行时会自动更新，需要时可点“刷新”。</td></tr>
+          <tr><td><span class="num">2</span> 上下文统计</td><td>当前范围有多少任务和请求？</td><td>图中是 2 轮任务、12 条请求 / 阶段记录。一次任务可有独立处理、交叉验证、汇总等多个阶段，12 不代表你发了 12 次问题。</td></tr>
+          <tr><td><span class="num">3</span> 记录范围</td><td>这些记录详细到什么程度？</td><td>图中原生请求 0、阶段快照 12、用量上报 12 / 12：保存了阶段输入及用量，不能据此看到每一次内部模型请求的完整输入。</td></tr>
+          <tr><td><span class="num">4</span> Token 统计</td><td>输入和输出用了多少，输入由哪些类别组成？</td><td>分类与用量采用不同口径，具体见下一节。</td></tr>
+          <tr><td><span class="num">5</span> 耗时统计</td><td>成员与工具花了多少时间？</td><td>按成员累计，并行部分会分别计入；它不等于你实际等待的时长。</td></tr>
+          <tr><td><span class="num">6</span> 当前上下文</td><td>当前筛选范围内，最新一条输入有多大？</td><td>优先显示上报输入用量；没有上报时显示带“≈”的估算。容量未上报时无法计算窗口占用。</td></tr>
+          <tr><td><span class="num">7</span> 上下文浏览器</td><td>我选中的这一步具体收到了什么？</td><td>选择步骤，展开分类和条目；可查正文、来源、版本以及该阶段的输出。</td></tr>
+          <tr><td><span class="num">8</span> 上下文趋势</td><td>输入在哪一步增长或缩小？</td><td>每根柱子对应一条记录。点击柱子，会切换浏览器中的请求；切换“增量”便于找变化。</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn"><strong>“当前上下文”和“选中的上下文”可能不同。</strong><p>左侧“当前上下文”始终显示当前成员筛选范围内的最新记录。右侧浏览器和趋势下方的步骤摘要跟随你选择的记录。点击历史柱形后，左侧最新值不跟着变，这是两块卡片的不同用途。</p></div>
+    </section>
+
+    <section id="numbers">
+      <h2>3. Token 和耗时，哪些数字可以放在一起比较</h2>
+      <p>Token 是模型处理文本等材料时使用的计量单位。这里主要用来判断输入大小和变化，不能直接换算成固定的汉字数。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>界面标记</th><th>含义</th><th>读图 1 的例子</th></tr></thead>
+        <tbody>
+          <tr><td>≈ 或“估算”</td><td>插件依据保存的文字估算大小，用来比较材料的类别和相对体积。</td><td>注入上下文累计约 10.6k，占已保存输入类别估算的 64.8%。</td></tr>
+          <tr><td>“上报”及输入 / 输出</td><td>运行时返回的用量，包含其实际统计范围中的输入或输出。</td><td>输入 173,837，输出 10,793；相加为 184,630，圆环中央显示 184.6k。</td></tr>
+          <tr><td>缓存与缓存命中</td><td>上报输入中有多少来自缓存读取。缓存是输入的一部分。</td><td>缓存 79,744，约为输入的 45.9%；不要再把它加到输入总量上。</td></tr>
+          <tr><td>— / 未上报</td><td>没有可用数据。</td><td>“已计时 0 / 12”表示这 12 条历史记录没有可显示的耗时，不表示全部瞬间完成。</td></tr>
+          <tr><td>窗口占用</td><td>最新输入量与已上报窗口容量的比例。</td><td>当前场景显示“窗口容量未上报”，因此不显示百分比，也不代表窗口已满。</td></tr>
+        </tbody>
+      </table></div>
+      <p><strong>圆环颜色与中央总数不是同一套数值。</strong>颜色反映保存输入的分类估算；中央“上报总量”是输入加输出的运行时用量。两者可以不同，尤其是只有阶段快照、缺少引擎额外注入内容时。多次请求重复携带同一段材料，也会多次计入累计统计。</p>
+      <p><strong>耗时也不要重复相加。</strong>“成员累计耗时”分别累加成员的请求 / 阶段时间；工具时间可能已包含其中。两位成员各执行 30 秒且同时开始，成员累计可能是 60 秒，用户实际等待约 30 秒。</p>
+      <p class="small">当前没有可核对的模型报价，因此这里不提供费用结算。分类估算、输入输出用量和费用是不同概念。</p>
+    </section>
+
+    <section id="browser">
+      <h2>4. 例子一：确认 Codex 有没有收到 DeepSeek 的意见</h2>
+      <ol>
+        <li>右上角“成员”选择 <strong>Codex</strong>。</li>
+        <li>在浏览器的步骤下拉框选择<strong>交叉验证 1</strong>；也可以点击趋势中对应的柱子。</li>
+        <li>展开<strong>注入上下文</strong>，再展开一条<strong>成员初步结果</strong>。</li>
+        <li>打开条目底部的<strong>来源与版本</strong>，核对来源成员。</li>
+      </ol>
+      <figure><div class="shot"><a href="images/context-02-review.png" target="_blank" rel="noopener"><img src="images/context-02-review.png" alt="选中 Codex 交叉验证 1，展开来自 DeepSeek 的成员初步结果及来源记录" loading="lazy"></a></div><figcaption><span class="tag real">真实记录</span>图 2 · 右侧展开了 DeepSeek 的初步结果；来源中 <code>agentId: deepseek</code> 说明材料来自 DeepSeek。左侧最新输入为 17.4k，而右侧历史步骤上报输入为 16.5k，展示了“最新”和“选中”的区别。</figcaption></figure>
+      <p class="check"><strong>你能确认：</strong>这条 DeepSeek 结果被列入了 Codex 该阶段的输入材料。它不能单独证明 Codex 已正确理解或采纳意见；还应展开底部<strong>本次请求 / 阶段的输出</strong>核对回应。</p>
+      <h3>七类材料分别是什么</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>分类</th><th>常见内容</th><th>适合检查什么</th></tr></thead>
+        <tbody>
+          <tr><td><span class="swatch" style="background:#7562ef"></span>系统提示词</td><td>成员角色、协作规则、阶段要求；原生记录中也可能有引擎系统提示。</td><td>是否分配了正确职责和行为要求。</td></tr>
+          <tr><td><span class="swatch" style="background:#efa900"></span>工具定义</td><td>工具名称、用途、参数说明和必填项。</td><td>记录中向模型提供了哪些工具接口；有定义不等于实际调用过。</td></tr>
+          <tr><td><span class="swatch" style="background:#18bd65"></span>用户消息</td><td>本轮任务、近期主聊天、附件路径等保存的用户侧材料。</td><td>要求或附件路径是否进入了这一步。</td></tr>
+          <tr><td><span class="swatch" style="background:#b15be4"></span>注入上下文</td><td>场景概况、被采用的记忆、成员交接结果，以及可观测到的压缩摘要等。</td><td>团队是否拿到了需要的背景和协作意见。</td></tr>
+          <tr><td><span class="swatch" style="background:#ff8b23"></span>技能注入</td><td>本次实际纳入的技能材料。</td><td>期待的技能说明是否随阶段输入保存。</td></tr>
+          <tr><td><span class="swatch" style="background:#3982fb"></span>助手消息</td><td>该请求之前已保存、并进入其输入的助手回复。</td><td>模型接续时带了哪些助手历史。</td></tr>
+          <tr><td><span class="swatch" style="background:#00b3a4"></span>工具结果</td><td>该请求之前产生、并进入其输入的工具返回内容。</td><td>文件正文、搜索结果或命令输出是否进入了后续请求。</td></tr>
+        </tbody>
+      </table></div>
+      <h3>浏览器里的常用按钮</h3>
+      <ul>
+        <li><strong>搜索：</strong>匹配当前选中请求的条目名称、正文和来源。普通分类模式下，搜完还要展开相应分类；它不搜索整个场景的所有历史请求。</li>
+        <li><strong>大小 / 名称 / 顺序：</strong>在普通分类模式下调整分类内的条目顺序。先按“大小”找最占空间的条目；按“顺序”恢复保存顺序。</li>
+        <li><strong>原文 / 格式化：</strong>原文适合核对完整文字；格式化适合阅读。工具定义若能解析，会显示参数、类型和必填项。</li>
+        <li><strong>复制：</strong>复制该条保存的正文。原文如果已被截取，复制的也是保留部分。</li>
+        <li><strong>本次请求 / 阶段的输出：</strong>显示输入之后产生的回复和关联工具结果。不要把它与七类输入中的“助手消息”“工具结果”混在一起。</li>
+      </ul>
+    </section>
+
+    <section id="trend">
+      <h2>5. 例子二：为什么到了交叉验证，上下文突然变长</h2>
+      <p>沿用图 2 的 Codex 记录，先选“独立处理”，再选“交叉验证 1”。交叉验证会携带成员的初步结果，输入增长可能来自协作材料。</p>
+      <ol>
+        <li>在<strong>上下文趋势</strong>切到<strong>步骤</strong>和<strong>增量</strong>，点击需要追查的柱子。</li>
+        <li>在浏览器切到<strong>新增</strong>，先看本次新出现或发生变化的条目。</li>
+        <li>展开增量较大的分类，核对增加的内容；需要查看前后完整输入时，切回<strong>完整</strong>。</li>
+      </ol>
+      <figure><div class="shot"><a href="images/context-03-delta.png" target="_blank" rel="noopener"><img src="images/context-03-delta.png" alt="Codex 的上下文增量趋势和新增材料视图，显示注入上下文增加约 696 tokens" loading="lazy"></a></div><figcaption><span class="tag real">真实记录</span>图 3 · “交叉验证 1”相对 Codex 的上一条请求，注入上下文约增加 696 tokens；浏览器中可检查成员初步结果。分类标题中的总量仍是完整请求的类别总量，不是只计算“新增”条目的大小。</figcaption></figure>
+      <div class="table-wrap"><table>
+        <thead><tr><th>开关</th><th>具体含义</th></tr></thead>
+        <tbody>
+          <tr><td>步骤 / 轮次</td><td>“步骤”显示每条保留的请求或阶段快照；“轮次”只显示每位成员在该任务轮次中的最后一条输入，不是整轮累计求和。</td></tr>
+          <tr><td>总量 / 增量</td><td>“总量”显示保存输入的分类估算；“增量”按类别与<strong>同一成员的上一条保留请求</strong>比较。没有上一条时，以零为基线。比较可能跨任务轮次。</td></tr>
+          <tr><td>总览</td><td>把更多柱子压缩进同一视野，适合观察整体走势；再次点击恢复普通宽度。</td></tr>
+          <tr><td>完整 / 新增</td><td>“完整”显示本次保存的全部条目；“新增”只显示相对该成员上一请求，类别、名称或正文组合不同的条目。修改过的条目会整条显示；这里不是逐字差异，也不单列删除内容。</td></tr>
+        </tbody>
+      </table></div>
+      <p><strong>柱子下降不一定是压缩。</strong>可能是阶段更换、交接材料减少，或输入组织发生变化。要判断是否压缩，继续看“上下文事件”里有没有相应记录；没有事件时，仅凭下降不能确定原因。</p>
+    </section>
+
+    <section id="dna">
+      <h2>6. DNA 模式：按输入保存顺序读一遍</h2>
+      <p>在浏览器右上角点击<strong>DNA 模式</strong>。普通视图按七类材料分组；DNA 视图把条目按该请求保存的输入顺序展开为一条序列。</p>
+      <figure class="portrait"><div class="shot"><a href="images/context-04-dna.png" target="_blank" rel="noopener"><img src="images/context-04-dna.png" alt="DNA 模式下依次显示角色与协作规则、场景概况、本轮任务、成员初步结果和近期主聊天" loading="lazy"></a></div><figcaption><span class="tag real">真实记录</span>图 4 · #1 为角色与协作规则，后面依次是场景、本轮任务和成员结果等材料。顶部彩条的颜色代表分类，长度按估算大小分配。</figcaption></figure>
+      <p><strong>适合用来检查：</strong>职责、任务、交接内容是否被放进同一份输入，以及各条保存材料的先后位置。它展示的是输入排列，不展示模型内部思考顺序或注意力权重。</p>
+      <p class="small">DNA 模式按保存顺序显示，不使用“大小 / 名称”的排序；如果启用了搜索或“新增”，列表会只显示符合条件的条目。</p>
+    </section>
+
+    <section id="memory">
+      <h2>7. 例子三：确认“清理前先问我”这条记忆有没有采用</h2>
+      <p>假设你的场景里保存了一条记忆：“所有清理先给清单，未经确认不删除。”下面用隔离教学样例演示核对方法。</p>
+      <ol>
+        <li>选择目标成员和对应请求步骤，展开<strong>注入上下文</strong>。</li>
+        <li>找到该记忆的标题；也可以搜索“清理前先确认”等关键字。</li>
+        <li>展开条目，核对<strong>正文</strong>和<strong>采用原因</strong>。</li>
+        <li>展开<strong>来源与版本</strong>，确认来源为记忆并查看修订号；有<strong>查看来源</strong>时，可跳转到记忆页。</li>
+      </ol>
+      <figure class="portrait"><div class="shot"><a href="images/context-05-memory-demo.png" target="_blank" rel="noopener"><img src="images/context-05-memory-demo.png" alt="教学样例中展开清理前先确认记忆，显示采用原因用户固定、来源 memory 和版本 v2" loading="lazy"></a></div><figcaption><span class="tag demo">教学样例</span>图 5 · 这次输入采用了“清理前先确认”，原因是“用户固定”，来源类型为 <code>memory</code>，版本为 v2。此图使用预设数据，没有向真实场景新增记忆。</figcaption></figure>
+      <p class="check"><strong>你能确认：</strong>该次输入包含了这条规则的这个版本。之后把记忆改成 v3，过去请求中保存的 v2 仍然保留，便于追查当时依据。</p>
+      <p>如果没有找到，先确认<strong>成员、步骤和记录范围</strong>，再到记忆页核对条目是否参与采用。记忆会按状态、关联程度和预算选用，不会把所有知识无条件塞入每次请求。原生请求的来源也可能只记录到运行时消息，此时可以搜索正文，结合阶段快照核对。</p>
+      <p>要纠正过时知识，请到<strong>记忆</strong>页编辑或停止采用，下一次请求再检查结果。上下文页用来查看已保存的输入记录，没有直接删除某段历史输入或强制压缩当前成员上下文的按钮。</p>
+    </section>
+
+    <section id="activity">
+      <h2>8. 例子四：确认读写了什么，以及命令为什么失败</h2>
+      <p>页面下方有<strong>上下文事件</strong>、<strong>文件活动</strong>和<strong>命令执行</strong>。这些卡片用来从结果反查记录。</p>
+      <figure><div class="shot"><a href="images/context-06-activity-demo.png" target="_blank" rel="noopener"><img src="images/context-06-activity-demo.png" alt="教学样例的上下文事件和文件活动，显示记忆注入、成员交接、文件读取和写入" loading="lazy"></a></div><figcaption><span class="tag demo">教学样例</span>图 6 · 左边可查看注入、交接等事件；右边把已识别的操作按文件路径汇总。这里的示例文件均未实际读写。</figcaption></figure>
+      <h3>查文件</h3>
+      <ol>
+        <li>在“文件活动”按路径搜索，或选择<strong>读取 / 写入 / 搜索 / 图片</strong>。</li>
+        <li>展开文件，核对完整路径、成员、时间和操作状态。同一个文件有多种操作时，会归入多个筛选类别。</li>
+        <li>点击<strong>定位结果</strong>，回到关联请求的输出区域核对详情。</li>
+      </ol>
+      <p><strong>“+3”表示记录中识别到新增 3 行。</strong>只有工具提供可识别的差异信息时，才有相应行数；没有行数不代表没有修改。文件列表来自可识别的工具记录，不是电脑上所有文件操作的完整监控。</p>
+      <h3>查命令</h3>
+      <figure><div class="shot"><a href="images/context-07-commands-demo.png" target="_blank" rel="noopener"><img src="images/context-07-commands-demo.png" alt="教学样例中两条命令，一条完成且退出码为0，另一条因示例路径不存在而失败且退出码为1" loading="lazy"></a></div><figcaption><span class="tag demo">教学样例</span>图 7 · 预设了两条命令记录：空间查询完成，另一次路径查询失败。图中的命令没有实际执行，输出也明确标注为教学样例。</figcaption></figure>
+      <ol>
+        <li>选择<strong>错误</strong>筛选，或搜索命令、程序名称。点击左侧“程序分布”中的程序也可以筛选。</li>
+        <li>展开记录，查看<strong>完整命令、成员、工作目录、耗时、退出码</strong>。</li>
+        <li>点击<strong>读取命令输出</strong>查看保留输出；若已加载，会直接显示正文。运行中的命令需等结束后读取。</li>
+        <li>点击<strong>定位请求</strong>，回到相关步骤，看这次结果如何影响后续回答。</li>
+      </ol>
+      <div class="example"><h3>图 7 应该得出什么结论</h3><p>空间查询这条命令被记录为完成，退出码为 0；路径查询这条被记录为错误，退出码为 1，输出说明找不到示例路径。此时应该核对路径，不能宣称这一路径已成功检查或清理。</p><p>单条命令成功也不等于整个任务已完成。仍需对照主聊天中的交付结果，以及任务要求的检查项。</p></div>
+      <h3>查上下文事件</h3>
+      <p>按<strong>注入、请求、压缩、清理、切换、模式、交接、用量</strong>等类型筛选，或搜索事件、成员。只有已有记录的类型才会显示。展开事件查看细节，存在“定位请求”时可跳到关联输入。“清理”在这里指上下文材料的清理事件，不能据此判断磁盘文件被删除。</p>
+    </section>
+
+    <section id="faq">
+      <h2>9. 常见问题与速查</h2>
+      <details class="faq" open><summary>为什么 Codex 和 DeepSeek 显示的材料详略不同？</summary><p>Codex 当前主要显示插件组装的阶段输入、实际工具活动及上报用量。DSH 原生请求还可以通过会话事件记录系统提示词、工具定义和消息。先看“记录范围”和单条输入下方的范围说明；已有旧任务不会自动补出未曾记录的内部内容。</p></details>
+      <details class="faq" open><summary>为什么分类是 0，或者某些卡片没有内容？</summary><p>可能是该步骤没有这类材料，也可能当前记录范围没有覆盖。例如图 1 的旧阶段记录没有工具定义，不能据此断言成员当时没有任何工具。文件或命令没有可识别记录时，也会显示为空。</p></details>
+      <details class="faq" open><summary>我选了一个步骤，为什么上面的统计没变？</summary><p>统计卡片汇总当前成员筛选与当前加载页的记录；步骤选择主要联动浏览器和趋势摘要。要看单步输入用量，请看浏览器顶部“估算 / 上报”和趋势下方的步骤摘要。</p></details>
+      <details class="faq" open><summary>怎么查看更早的任务？</summary><p>滚到页面底部；如果出现“查看更早记录”，点击进入更早的一页。当前一页最多读取 600 个输入快照、2,000 次工具记录、400 条上下文事件和 400 个文件。页内累计数字不是整个场景永远完整的总账。</p></details>
+      <details class="faq" open><summary>界面是否保证保存了模型看到的每个字？</summary><p>以每条记录的范围说明为准。原生采集最多保留 1,000 个输入条目，单条正文最多 10 万字符；超限时会标记截取或范围近似。阶段快照和原生请求也有不同覆盖范围。输入记录展示材料，不证明模型一定正确理解了其中内容。</p></details>
+      <details class="faq" open><summary>怎么在这里管理或减少上下文？</summary><p>先用趋势和浏览器找出重复、过时或过大的材料，再到“记忆”页修订相关知识，或到“团队”页调整角色和技能，随后核对新任务的输入。当前上下文页以查看和追溯为主，不能在这里直接改写历史请求或手动强制压缩成员上下文。</p></details>
+      <h3>遇到问题，直接查这一项</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>你想知道</th><th>最快路径</th></tr></thead>
+        <tbody>
+          <tr><td>成员有没有收到我的要求？</td><td>选成员 → 选步骤 → 用户消息 → 本轮任务。</td></tr>
+          <tr><td>有没有收到协作者意见？</td><td>选审查 / 汇总步骤 → 注入上下文 → 成员结果 → 来源。</td></tr>
+          <tr><td>采用了哪条记忆的哪个版本？</td><td>选步骤 → 注入上下文 → 记忆条目 → 来源与版本。</td></tr>
+          <tr><td>哪一段输入占空间？</td><td>分类占比 → 展开大类别 → 按“大小”看条目。</td></tr>
+          <tr><td>为什么突然增长？</td><td>趋势“增量” → 点柱子 → 浏览器“新增”。</td></tr>
+          <tr><td>文件操作有没有对应结果？</td><td>文件活动 → 展开路径 → 定位结果。</td></tr>
+          <tr><td>命令为什么失败？</td><td>命令执行 → 错误 → 展开 → 输出与退出码。</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+    <footer>本指南对应场景协作插件当前上下文界面，使用实际界面截图和明确标注的教学数据。浏览器入口与 DSH 面板共用同一套界面。界面布局参考 <a href="https://github.com/bowenliang123/dsh-context" target="_blank" rel="noopener">DSH-Context</a>；数据覆盖范围以本插件保存的记录为准。</footer>
+  </main>
+</div>
+</body>
+</html>

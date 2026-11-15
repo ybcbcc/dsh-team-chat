@@ -1,0 +1,3 @@
+- insert:
+    - id: codex-chat
+      name: '@local/dsh-codex-chat'

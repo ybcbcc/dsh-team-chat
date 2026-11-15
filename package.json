@@ -1,0 +1,71 @@
+{
+  "name": "@local/dsh-codex-chat",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-agent scenario collaboration for DeepSeek Harness with configurable model providers, extensible agents, persistent memory, and context insights.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ybcbcc/dsh-team-chat.git"
+  },
+  "homepage": "https://github.com/ybcbcc/dsh-team-chat#readme",
+  "bugs": {
+    "url": "https://github.com/ybcbcc/dsh-team-chat/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": {
+      "default": "./client.js"
+    },
+    "./package.json": "./package.json",
+    "./page": {
+      "default": "./page.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./workbench": "./workbench.js",
+    "./workbench.css": "./workbench.css",
+    "./workbench-host": "./workbench-host.js",
+    "./scenario-store": "./scenario-store.js",
+    "./coordinator": "./coordinator.js",
+    "./context-dashboard": "./context-dashboard.js",
+    "./context-insights": "./context-insights.js",
+    "./workbench-views": "./workbench-views.js",
+    "./docs/*": "./docs/*"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "page.js",
+    "workbench.js",
+    "workbench-views.js",
+    "workbench.css",
+    "workbench-host.js",
+    "scenario-store.js",
+    "coordinator.js",
+    "context-dashboard.js",
+    "context-insights.js",
+    "test/render-smoke.cjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "docs/*.html",
+    "docs/images/*.png"
+  ],
+  "scripts": {
+    "test:render": "node test/render-smoke.cjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

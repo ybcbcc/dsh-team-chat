@@ -1,0 +1,14 @@
+node_modules/
+.dsh-codex-uploads/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+.DS_Store
+Thumbs.db
+npm-debug.log*
+pnpm-debug.log*

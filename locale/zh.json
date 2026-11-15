@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "场景协作",
+    "description": "在同一场景中与 Codex、DeepSeek 协作，支持置信验证、Owner 统筹、独立记忆和上下文来源查看。保留 /codex 命令入口。"
+  }
+}

@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>场景协作插件完整介绍与使用手册</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #203047;
+      --muted: #62748a;
+      --accent: #245bb5;
+      --line: #dce5ef;
+      --tint: #f0f5fc;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 28px; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #f5f7fa;
+      font: 16px/1.85 "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    button { font: inherit; cursor: pointer; }
+    .layout {
+      display: grid;
+      grid-template-columns: 225px minmax(0, 1fr);
+      gap: 34px;
+      max-width: 1480px;
+      margin: auto;
+      padding: 40px 28px 70px;
+    }
+    aside { position: sticky; top: 28px; align-self: start; font-size: 14px; }
+    aside b { display: block; margin-bottom: 12px; }
+    aside a { display: block; padding: 5px 0; color: var(--muted); text-decoration: none; }
+    aside a:hover { color: var(--accent); }
+    aside .chapter-link { margin-top: 12px; color: var(--ink); font-weight: 650; }
+    aside small { display: block; margin-top: 20px; color: var(--muted); }
+    main { min-width: 0; padding: 40px 44px; border: 1px solid var(--line); border-radius: 15px; background: white; }
+    header { padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0 0 14px; font-size: 32px; line-height: 1.4; }
+    h2 { margin: 0 0 18px; font-size: 25px; line-height: 1.5; }
+    h3 { margin: 28px 0 12px; font-size: 20px; line-height: 1.6; }
+    h4 { margin: 22px 0 10px; font-size: 17px; }
+    p { margin: 10px 0 16px; }
+    section { padding-top: 36px; }
+    section section { padding-top: 8px; }
+    .chapter { margin-top: 36px; padding-top: 36px; border-top: 2px solid var(--line); }
+    .eyebrow { margin: 0 0 9px; color: var(--accent); font-size: 13px; letter-spacing: 1px; }
+    .lead { font-size: 18px; color: #42556d; }
+    .small, .meta { color: var(--muted); font-size: 13px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 20px 0 12px; }
+    .actions button { padding: 7px 15px; border: 1px solid var(--line); border-radius: 7px; background: white; color: var(--ink); }
+    ol, ul { padding-left: 24px; }
+    li { margin: 8px 0; padding-left: 3px; }
+    strong { font-weight: 650; }
+    .callout { padding: 15px 20px; margin: 22px 0; border-left: 4px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--tint); }
+    .callout p:last-child { margin-bottom: 0; }
+    .note { border-color: #b67a1f; background: #fff8ec; }
+    .flow { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin: 18px 0; }
+    .flow span { padding: 7px 11px; border: 1px solid var(--line); border-radius: 6px; background: #f4f7fb; font-size: 14px; }
+    .flow i { font-style: normal; color: var(--muted); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; margin: 17px 0; border-collapse: collapse; font-size: 14px; line-height: 1.8; }
+    th, td { padding: 11px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { font-weight: 650; background: #f4f7fb; }
+    td:first-child { font-weight: 600; }
+    code, kbd { padding: 2px 5px; border-radius: 4px; background: #f0f3f7; font: 13px/1.7 Consolas, "Microsoft YaHei", monospace; overflow-wrap: anywhere; }
+    figure { margin: 24px 0 28px; }
+    figure a { display: block; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
+    figure img { display: block; width: 100%; height: auto; }
+    figure.portrait { max-width: 700px; margin-left: auto; margin-right: auto; }
+    figcaption { margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+    .tag { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .real { color: #216749; background: #e6f4eb; }
+    .demo { color: #865418; background: #fff0d7; }
+    .example { padding: 16px 20px; margin: 20px 0; border: 1px solid var(--line); border-radius: 8px; }
+    .example h4 { margin-top: 0; }
+    .example p:last-child { margin-bottom: 0; }
+    .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; }
+    details.faq { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    details.faq summary { font-weight: 650; cursor: pointer; }
+    footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    @media (max-width: 920px) {
+      .layout { display: block; padding: 18px 12px; }
+      aside { position: static; margin-bottom: 22px; }
+      aside a { display: inline-block; margin-right: 15px; }
+      aside .chapter-link { display: block; margin-top: 10px; }
+      aside small { display: none; }
+      main { padding: 25px 20px; }
+      h1 { font-size: 27px; }
+      h2 { font-size: 23px; }
+    }
+    @media print {
+      @page { size: A4; margin: 16mm; }
+      html { scroll-behavior: auto; }
+      body { background: white; font-size: 11pt; line-height: 1.7; }
+      .layout { display: block; max-width: none; padding: 0; }
+      aside, .actions { display: none; }
+      main { padding: 0; border: 0; }
+      h1 { font-size: 25pt; }
+      h2 { font-size: 18pt; break-after: avoid; }
+      h3 { font-size: 14pt; break-after: avoid; }
+      h4 { font-size: 12pt; break-after: avoid; }
+      .chapter { break-before: page; margin-top: 0; padding-top: 0; border: 0; }
+      p { orphans: 3; widows: 3; }
+      figure, .callout, .example, tr { break-inside: avoid; }
+      figure { margin: 16px 0; }
+      figure img { max-height: 170mm; object-fit: contain; object-position: left top; }
+      figure.portrait { max-width: 120mm; }
+      table, figcaption, .small, .meta { font-size: 9pt; }
+      th, td { padding: 7px 8px; }
+      thead { display: table-header-group; }
+      a { color: inherit; text-decoration: none; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside aria-label="手册目录">
+    <b>场景协作完整手册</b>
+    <a href="#overview">插件与场景</a>
+    <a href="#first-use">第一次使用</a>
+    <a class="chapter-link" href="#collaboration">第一章　协作</a>
+    <a href="#team">团队与模型</a>
+    <a href="#agent-connections">接入新模型与 Agent</a>
+    <a href="#new-sessions">创建需求会话</a>
+    <a href="#profiles">扩展成员与任务强度</a>
+    <a href="#confidence">置信模式</a>
+    <a href="#owner">统筹模式</a>
+    <a href="#process">成员过程与任务状态</a>
+    <a class="chapter-link" href="#context">第二章　上下文</a>
+    <a href="#context-cards">仪表板与数值</a>
+    <a href="#context-browser">输入材料与来源</a>
+    <a href="#context-trend">趋势与执行记录</a>
+    <a class="chapter-link" href="#memory">第三章　记忆</a>
+    <a href="#memory-create">知识如何积累</a>
+    <a href="#memory-use">状态与采用规则</a>
+    <a href="#memory-revisions">编辑与版本恢复</a>
+    <a href="#memory-import">旧版共享资料</a>
+    <a class="chapter-link" href="#workflow">完整使用示例</a>
+    <a href="#data">数据保存与恢复</a>
+    <a href="#mac">迁移到 Mac</a>
+    <a href="#quick-reference">问题速查</a>
+    <small>对应当前插件实现<br>2026 年 11 月 15 日<br>截图可点击放大</small>
+  </aside>
+
+  <main>
+    <header>
+      <p class="eyebrow">DeepSeek Harness · 场景协作</p>
+      <h1>场景协作插件完整介绍与使用手册</h1>
+      <p class="lead">围绕同一个场景配置 Codex、DSH 模型及其他 Agent，持续完成任务，查看每一步的输入和操作，并把可复用的知识留给后续任务。</p>
+      <div class="actions"><button type="button" onclick="window.print()">打印或另存为 PDF</button><span class="meta">协作 · 上下文 · 记忆</span></div>
+      <p class="small">本手册对应 2026 年 11 月 15 日的源码实现。图中“真实记录”来自已有任务。“教学样例”使用实际界面加载预设数据，示例任务、文件、模型配置与命令输出均用于说明操作。所有截图可点击放大。</p>
+    </header>
+
+    <section id="overview">
+      <h2>插件与场景</h2>
+      <p>这个插件把多位成员的协作放进一个可持续使用的工作区。你在主聊天中提出任务，成员依据各自的角色和技能处理，团队把结论汇报到主聊天。过程中采用的材料、执行记录和可复用知识都有对应的查看入口。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>部分</th><th>主要用途</th><th>界面入口</th></tr></thead>
+        <tbody>
+          <tr><td>协作</td><td>配置成员，选择协作方式，分工、执行、审查和汇报。</td><td>对话、团队</td></tr>
+          <tr><td>上下文</td><td>查看成员收到的材料、输入变化、用量和执行记录，追溯结论依据。</td><td>上下文</td></tr>
+          <tr><td>记忆</td><td>保存本场景长期采用的规则、事实与经验，管理状态、来源和版本。</td><td>记忆</td></tr>
+        </tbody>
+      </table></div>
+      <p>场景保存长期项目知识，一个场景可以绑定多个 DSH Session。每个 Session 用于一项新需求，保留自己的对话记录，同时选用相同的场景资料与角色记忆。例如“手机 App 的 TypeScript 前端”是场景，“增加登录页”和“调整通知开关”分别使用两个需求会话。</p>
+      <figure><a href="images/plugin-08-scene-binding.png" target="_blank" rel="noopener"><img src="images/plugin-08-scene-binding.png" alt="新需求会话首次进入时，选择创建新场景或绑定已有场景" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>新需求可以绑定已有场景，继续使用项目知识。以已有会话创建场景时，可以沿用其标题，再把场景名称改为长期项目名称。</figcaption></figure>
+      <p>场景保存名称、工作区、目标与边界、成员配置、任务记录和知识。成员角色会随阶段输入传入模型，成员身份和处理过程会保留。各个执行阶段通过保存的资料、必要历史与交接材料接续工作。</p>
+      <div class="flow" aria-label="三个部分的协同过程"><span>你提出场景任务</span><i>→</i><span>团队协作</span><i>→</i><span>记录输入与结果</span><i>→</i><span>沉淀可复用记忆</span><i>→</i><span>后续任务选用</span></div>
+    </section>
+
+    <section id="first-use">
+      <h2>第一次使用</h2>
+      <ol>
+        <li>在 DSH 中进入本次需求的 Session，从右侧栏打开<strong>场景协作</strong>。首次进入时，选择创建新场景或绑定已有场景。</li>
+        <li>打开<strong>团队</strong>，填写场景名称和<strong>场景目标与边界</strong>，通过<strong>选择文件夹</strong>设置工作区，也可手动修正路径。</li>
+        <li>为 Codex 和 DeepSeek 设置职责、模型、思考强度与技能，然后点击<strong>保存设置</strong>。</li>
+        <li>返回<strong>对话</strong>，选择置信模式或统筹模式。统筹模式需要先选择 Owner。</li>
+        <li>写下本轮目标、约束和完成标准，点击<strong>发送</strong>。需要长期保留的规则可以明确写“请记住”，也可以到记忆页手动新增。</li>
+      </ol>
+      <p>浏览器入口与 DSH 面板共用同一套界面。默认地址为 <code>http://127.0.0.1:18401/codex-chat</code>。实际端口可在 DSH 中通过 <code>/codex</code> 查询，也可以通过 <code>/codex open</code> 打开。使用 DeepSeek 成员时，需要通过 DSH 需求会话关联场景。内部 Session 编号由插件管理。</p>
+      <div class="example"><h4>场景目标与边界示例</h4><p>“持续维护这个插件，工作区使用当前项目目录。Codex 负责实现，DeepSeek 负责审查。交付时先说明结果和检查情况。涉及修改前先核对现有接口。”</p><p>后续本轮任务可以写“为设置页增加通知开关，沿用现有接口，并检查保存失败时的反馈”。场景提供长期背景，本轮任务提供这一次的具体目标。</p></div>
+    </section>
+
+    <section class="chapter" id="collaboration">
+      <h2>第一章　协作</h2>
+      <p>协作部分把成员设置、任务执行和用户交互连在一起。你通过主聊天提出要求，查看团队结论或补充信息。每位成员的阶段结果和证据保留在右侧过程框。</p>
+
+      <section id="team">
+        <h3>1.1　团队、角色、模型与技能</h3>
+        <p>打开<strong>团队</strong>，可以编辑场景资料，也可以配置每位成员。目前可配置 2 至 8 位成员，支持直接 Codex、DSH 模型供应商及 DSH 注册的其他 Agent。添加成员后，选择接入方式和职责。</p>
+        <figure><a href="images/plugin-03-team-demo.png" target="_blank" rel="noopener"><img src="images/plugin-03-team-demo.png" alt="团队设置包含工作区选择、真实模型名称、自定义技能、扩展强度档位和成员旁的添加按钮" loading="lazy"></a><figcaption><span class="tag demo">教学配置</span>图 1　模型名称来自当前实际运行时目录，显示 GPT-6-Astra 和 DeepSeek-V4.1-Flash。扩展档位、角色技能及工作区为教学配置。</figcaption></figure>
+        <div class="table-wrap"><table>
+          <thead><tr><th>设置</th><th>作用与使用方式</th></tr></thead>
+          <tbody>
+            <tr><td>场景名称、工作区</td><td>用于识别项目及其实际工作目录。</td></tr>
+            <tr><td>场景目标与边界</td><td>保存持续适用的背景与工作范围，每个阶段组装输入时会带上。</td></tr>
+            <tr><td>关联需求会话</td><td>通过“管理场景与会话”查看关联关系。场景名称用于长期项目，会话名称用于本次需求。</td></tr>
+            <tr><td>名称、接入方式、职责</td><td>名称用于辨认成员，接入方式决定执行通道，职责描述该成员负责的工作。</td></tr>
+            <tr><td>模型、思考强度</td><td>从当前运行时目录选择。默认项跟随引擎或模型默认值，具体强度选项随模型变化。</td></tr>
+            <tr><td>快速模式</td><td>Codex 成员可请求 priority 服务档位，实际支持情况由所用运行时和服务商决定。</td></tr>
+            <tr><td>技能</td><td>勾选运行时已有技能，或点击成员卡片中的“新增技能”，填写名称和操作说明，再保存团队设置。</td></tr>
+            <tr><td>交叉验证轮数</td><td>置信模式按你填写的轮数核对，默认 2 轮。填 0 表示持续验证到一致或你停止，可以填写超过 3 的轮数。</td></tr>
+            <tr><td>置信模式汇总成员</td><td>指定负责形成统一结论的成员，默认 Codex。</td></tr>
+          </tbody>
+        </table></div>
+        <p>点击<strong>保存设置</strong>后，模型、角色和技能用于下一轮任务。思考强度与新增扩展档位可用于当前任务尚未开始的步骤，正在执行的请求保留启动参数。若模型或技能目录发生变化，可点击<strong>刷新模型与技能</strong>重新读取。</p>
+        <p>输入框下方的成员按钮可以进入团队设置，调整模型与思考强度。模型列表读取当前运行时实际提供的名称，重复名称才附带来源便于区分。模型是否提供关闭思考档位，由其能力目录决定。当前读取到的 DeepSeek 支持 off，Codex 最低提供 low。</p>
+        <p>两种模式共用项目资料、成员和技能配置。置信模式显示验证轮数与汇总成员，统筹模式显示 Owner。任务分工在对话右侧的“本轮分工”查看。</p>
+      </section>
+
+      <section id="agent-connections">
+        <h3>接入新模型与其他 Agent</h3>
+        <p>增加新模型时，先在 DSH 的模型设置中配置供应商、模型和授权。返回插件团队页，点击<strong>刷新模型与技能</strong>，将成员接入方式设为<strong>DSH 模型供应商</strong>，选择对应模型与强度。目录来自当前 DSH 配置，可包含相应供应商插件支持的其他厂商模型。</p>
+        <p>增加独立 Agent 时，先在 DSH 的插件管理中启用对应接入，例如 Claude Code、ACP 或自定义 SDK Agent。然后在本插件添加成员，选择<strong>其他 Agent · DSH 接入</strong>，从已启用的接入名称中选择，填写角色并选择技能后保存。</p>
+        <p>接入声明支持模型参数覆盖时，插件显示模型与强度选择。固定配置的接入使用它在 DSH 中的模型、强度和权限设置。外部 Agent 会收到按角色组装的场景、记忆与技能，阶段输入和最终交付会保留，工具与用量明细取决于后端提供的信息。</p>
+      </section>
+
+      <section id="new-sessions">
+        <h3>创建需求会话</h3>
+        <ol><li>点击插件顶部的<strong>新建需求会话</strong>。</li><li>填写名称，例如“登录页需求”，确认当前关联场景。</li><li>点击<strong>创建并打开</strong>。插件调用 DSH 创建会话，并自动关联当前场景。</li><li>在新会话中发送需求，团队和记忆沿用当前场景，聊天单独保留。</li></ol>
+        <p>也可以通过 DSH 左上角的<strong>新建会话</strong>创建，再打开场景协作，选择绑定已有场景。要回到旧需求，点击插件的<strong>场景</strong>，打开关联会话。</p>
+      </section>
+
+      <section id="profiles">
+        <h3>扩展成员与任务强度</h3>
+        <p>在原成员卡片中点击<strong>添加强度档位</strong>，设置名称、适合的难度和思考强度。扩展档位共用原成员的模型、职责、技能与角色记忆，过程继续记录在原成员框中。</p>
+        <div class="table-wrap"><table><thead><tr><th>子任务</th><th>配置示例</th></tr></thead><tbody><tr><td>3 项简单任务</td><td>选用“简单任务”，Codex 使用 low，支持 off 的 DeepSeek 可关闭思考。</td></tr><tr><td>1 项中等任务</td><td>选用“中等任务”，使用该模型提供的中间强度。</td></tr><tr><td>1 项困难任务</td><td>选用“困难任务”，使用 high 或更高的可用强度。</td></tr></tbody></table></div>
+        <p>统筹时，Owner 会结合子任务难度选择已配置档位。运行中可以在<strong>本轮分工</strong>修改尚未执行的子任务档位，也可以在成员框调整<strong>后续步骤的强度</strong>。当前已启动的模型请求保留启动参数，修改在后续步骤生效。</p>
+        <figure><a href="images/plugin-09-task-profiles.png" target="_blank" rel="noopener"><img src="images/plugin-09-task-profiles.png" alt="本轮五项分工中的待执行任务可以选择扩展档位，成员框可调整后续步骤强度" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>本轮分工可在清单内部滚动。待执行任务与成员后续步骤各有档位选择入口。</figcaption></figure>
+      </section>
+
+      <section id="confidence">
+        <h3>1.2　置信模式</h3>
+        <p>置信模式围绕同一任务组织独立处理、交叉审查和统一结论，适合需要核对事实、验证方案或检查实现结果的工作。</p>
+        <div class="flow" aria-label="置信模式流程"><span>独立处理</span><i>→</i><span>交叉验证</span><i>→</i><span>必要时补充核实</span><i>→</i><span>需要时执行</span><i>→</i><span>汇总并审查统一稿</span></div>
+        <ol>
+          <li><strong>独立处理</strong>。成员先分别调研、给出方案与证据，并说明任务是否需要实际操作。</li>
+          <li><strong>交叉验证</strong>。成员收到彼此结果，核对关键主张和来源，返回通过、需要修改或证据不足等意见。</li>
+          <li><strong>补充核实</strong>。存在问题时，成员结合意见补充来源并修订，随后进入下一轮验证。全部通过时可以提前结束验证。</li>
+          <li><strong>执行与统一稿</strong>。需要实际操作时，交给一位执行成员，优先选择 Codex。汇总成员组织最终答复，其他成员再核对统一稿和执行证据。</li>
+          <li><strong>团队汇报</strong>。结论回到主聊天。达到验证上限仍有分歧时，会保留“存在分歧”及相关过程。</li>
+        </ol>
+        <figure><a href="images/plugin-01-confidence-demo.png" target="_blank" rel="noopener"><img src="images/plugin-01-confidence-demo.png" alt="置信模式教学图，左边是用户任务与统一结论，右边是 Codex 和 DeepSeek 的独立过程" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 2　左侧显示任务和团队汇报，右侧分别显示实现与审查结果。输入框底部可选择置信模式。</figcaption></figure>
+        <p>调研和审查阶段带有读取要求，涉及实际修改时进入执行阶段。直接 Codex 和 DSH 原生通道提供相应读取限制，其他 Agent 的实际权限由它的 DSH 接入配置管理。最终状态结合成员失败、证据和审查意见形成，可以打开右侧<strong>查看原始结果与证据</strong>核对具体争议。</p>
+      </section>
+
+      <section id="owner">
+        <h3>1.3　统筹模式</h3>
+        <p>统筹模式由你选择一位 Owner 负责本轮任务。Owner 结合团队职责安排工作、收回成员结果，并检查交付，适合有多个步骤或明确分工的需求。</p>
+        <ol>
+          <li>在输入框底部选择<strong>统筹模式</strong>。</li>
+          <li>在<strong>由谁负责本次任务</strong>中选择 Owner。Codex 和 DeepSeek 都可以担任 Owner。</li>
+          <li>发送任务。Owner 先生成分工，包含负责人、任务说明、依赖关系和验收要求。</li>
+          <li>成员按分工处理并回报。对话右侧可展开<strong>本轮分工</strong>，查看负责人、执行状态和档位。</li>
+          <li>Owner 检查结果并简短汇报。需要继续修正时，可以安排一轮返工分工，再检查交付。</li>
+        </ol>
+        <figure><a href="images/plugin-02-owner-demo.png" target="_blank" rel="noopener"><img src="images/plugin-02-owner-demo.png" alt="统筹模式教学图，输入区选择 Codex 为 Owner，成员框显示 Owner 标识" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 3　输入区明确选择 Codex 负责，右侧成员标题也显示 Owner。主聊天中的最终汇报由 Owner 发出。</figcaption></figure>
+        <p>Owner 是本轮的统筹职责，成员仍使用各自配置的模型、角色和技能。Owner 可以分派给自己实现，也可以让其他成员先调研或审查。任务依赖会影响推进顺序，涉及同一工作区的写入阶段会串行调度。</p>
+        <p>需要你提供信息时，主聊天会出现<strong>需要你补充</strong>的表单。填写后点击<strong>发送补充</strong>，任务继续推进。最终汇报默认要求简短，较长内容可以通过<strong>完整答复</strong>展开。</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>对比项</th><th>置信模式</th><th>统筹模式</th></tr></thead>
+          <tbody>
+            <tr><td>工作组织</td><td>成员独立处理，再交叉核对。</td><td>Owner 分工，成员交付，Owner 检查。</td></tr>
+            <tr><td>负责人设置</td><td>团队页指定汇总成员。</td><td>发送前选择 Owner。</td></tr>
+            <tr><td>主要查看位置</td><td>右侧成员的初步结果与审查意见。</td><td>对话右侧的本轮分工与成员交付。</td></tr>
+            <tr><td>典型用途</td><td>事实核查、方案比较、交叉审查。</td><td>需求实现、多步骤处理、持续项目推进。</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="process">
+        <h3>1.4　成员过程、尺寸调整与任务状态</h3>
+        <p>发起任务后，工作区显示主聊天和成员过程。DSH 面板会自动展开工作区，也可以通过<strong>展开工作区 / 收回工作区</strong>调整显示范围。窄面板使用<strong>主聊天 / 成员过程</strong>切换视图。</p>
+        <ul>
+          <li><strong>左右宽度</strong>可以拖动主聊天和成员过程之间的竖向分隔条调整。</li>
+          <li><strong>成员高度</strong>可以拖动展开成员框之间的横向分隔条调整，双击恢复均分。聚焦分隔条后也可用上下方向键调整。</li>
+          <li><strong>独立滚动</strong>发生在每位成员框内部。成员标题保留在固定位置，框内滚动用于查看长过程。</li>
+          <li><strong>收起 / 展开</strong>用于控制单个成员框，全部收起用于快速腾出空间。高度比例按场景保存在当前浏览器。</li>
+          <li><strong>任务轮次选择</strong>位于成员过程顶部，可以切换查看已有任务。成员的原始输出、证据和工具结果可以展开阅读。</li>
+          <li><strong>查看实际采用的上下文</strong>会打开上下文页，并按该成员筛选。</li>
+        </ul>
+        <div class="table-wrap"><table>
+          <thead><tr><th>状态</th><th>含义与处理方式</th></tr></thead>
+          <tbody>
+            <tr><td>独立处理、交叉验证、补充核实</td><td>置信流程正在推进，可查看成员过程。</td></tr>
+            <tr><td>Owner 分工、成员执行、检查交付</td><td>统筹或执行流程正在推进。</td></tr>
+            <tr><td>等待你的补充</td><td>在主聊天填写补充表单并发送。</td></tr>
+            <tr><td>已完成</td><td>团队流程已完成，主聊天显示结果。</td></tr>
+            <tr><td>存在分歧</td><td>当前审查仍有不同意见，查看结论及成员证据。</td></tr>
+            <tr><td>尚未完成、执行失败</td><td>查看任务说明和成员错误，核对已有结果后可接续。</td></tr>
+            <tr><td>已停止、运行中断</td><td>本轮停止或被运行时重启打断，已有记录保留。</td></tr>
+          </tbody>
+        </table></div>
+        <p>同一场景每次推进一轮活动任务。运行时“发送”会变成<strong>停止</strong>。停止会终止活动执行，已经发生的操作需要结合记录核对。失败、未完成、停止或中断后，界面提供<strong>接续这项任务</strong>，新一轮会带上旧任务状态和已完成内容，先核对再继续。</p>
+        <p>附件通过输入框旁的<strong>＋</strong>添加，每轮最多 10 个文件，单文件最多 15 MB。文件清单与路径进入阶段输入。包含 DeepSeek 成员的图片任务，当前需要先提供文字描述或提取的内容。</p>
+      </section>
+    </section>
+
+    <section class="chapter" id="context">
+      <h2>第二章　上下文</h2>
+      <p>上下文页记录成员在某次请求或某个阶段接收到的材料，以及相关输出与执行活动。你可以按成员、步骤和来源追查信息，也可以查看输入大小的变化。</p>
+      <p>日常可用它核对三件事。项目规范和角色记忆是否进入输入，某一步是否因重复材料或大段工具输出而增长，以及“执行成功”的说法能否找到命令、退出码或文件结果。Token 与趋势为这些排查提供定位线索，来源和输出用于进一步核对。</p>
+
+      <section id="context-cards">
+        <h3>2.1　仪表板的区域与记录范围</h3>
+        <figure><a href="images/context-01-overview.png" target="_blank" rel="noopener"><img src="images/context-01-overview.png" alt="真实上下文仪表板，显示统计、记录范围、Token、耗时、最新输入、趋势和内容浏览器" loading="lazy"></a><figcaption><span class="tag real">真实记录</span>图 4　已有场景的上下文页。上方为当前成员筛选范围内的统计，中部为最新输入与历史浏览器，下方继续显示趋势和执行活动。</figcaption></figure>
+        <div class="table-wrap"><table>
+          <thead><tr><th>区域</th><th>可以查看的内容</th></tr></thead>
+          <tbody>
+            <tr><td>成员与刷新</td><td>查看全部成员或只看一位成员。任务过程中会更新，需要时可以手动刷新。</td></tr>
+            <tr><td>上下文统计</td><td>当前记录页涉及的任务轮次、请求 / 阶段数、技能条目和工具调用。</td></tr>
+            <tr><td>记录范围</td><td>原生请求、阶段快照、已上报用量的条数，帮助判断材料覆盖范围。</td></tr>
+            <tr><td>Token 统计、耗时统计</td><td>输入输出用量、缓存读取、输入类别估算，以及成员和工具耗时。</td></tr>
+            <tr><td>当前上下文</td><td>当前成员筛选范围内最新一条输入的大小、分类和已上报窗口容量。</td></tr>
+            <tr><td>上下文浏览器</td><td>你选中步骤的输入条目、正文、来源及该阶段输出。</td></tr>
+            <tr><td>上下文趋势</td><td>各步骤或轮次输入组成的变化，可点击柱形切换浏览器中的步骤。</td></tr>
+          </tbody>
+        </table></div>
+        <p>Codex 目前保存插件组装的阶段输入、工具活动和上报用量。DSH 成员还可通过原生会话事件保存逐请求系统提示、工具定义和消息。历史任务可见的内容取决于当时保存的范围，查看时先核对<strong>记录范围</strong>及单条记录的说明。</p>
+        <div class="callout"><strong>最新输入与历史选择分别显示。</strong><p>左侧“当前上下文”跟随筛选范围内的最新记录，右侧浏览器跟随你选择的步骤。选中历史步骤后，可以用右侧的“估算 / 上报”和趋势摘要查看该步大小。</p></div>
+
+        <h3>2.2　Token、缓存、窗口和耗时</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>数值</th><th>口径</th></tr></thead>
+          <tbody>
+            <tr><td>≈、估算</td><td>按保存文字估算，用于比较各类材料大小与相对变化。</td></tr>
+            <tr><td>上报输入、输出</td><td>运行时返回的用量，反映其实际统计范围。</td></tr>
+            <tr><td>圆环颜色与中心数值</td><td>颜色展示保留输入的类别累计估算，中心展示上报输入加输出。两者采用各自口径。</td></tr>
+            <tr><td>缓存、缓存命中</td><td>上报输入中来自缓存读取的部分，输入总量已包含它。</td></tr>
+            <tr><td>窗口占用</td><td>最新输入量相对已上报窗口容量的比例。容量缺失时显示未上报。</td></tr>
+            <tr><td>成员累计耗时</td><td>各成员的请求或阶段时长分别累加。并行部分会分别计入，工具耗时可能已包含在阶段内。</td></tr>
+            <tr><td>—</td><td>当前没有可用的上报或计时数据。</td></tr>
+          </tbody>
+        </table></div>
+        <p>图 4 中输入为 173,837，输出为 10,793，相加后显示为 184.6k。缓存 79,744 约占输入 45.9%。分类估算受保存范围影响，可以与上报用量存在差异。当前仪表板展示用量，费用计算仍需要可核对的模型报价。</p>
+      </section>
+
+      <section id="context-browser">
+        <h3>2.3　查看输入材料与来源</h3>
+        <ol>
+          <li>先在右上角选择成员。</li>
+          <li>在<strong>上下文浏览器</strong>选择请求步骤，或点击趋势中的柱形。</li>
+          <li>展开分类，再展开条目。需要时切换<strong>原文 / 格式化</strong>，查看<strong>来源与版本</strong>。</li>
+          <li>展开底部<strong>本次请求 / 阶段的输出</strong>，核对该输入之后产生的回复和关联工具结果。</li>
+        </ol>
+        <div class="table-wrap"><table>
+          <thead><tr><th>分类</th><th>典型材料</th></tr></thead>
+          <tbody>
+            <tr><td><span class="swatch" style="background:#7562ef"></span>系统提示词</td><td>角色、协作规则、阶段要求和可观测的引擎系统提示。</td></tr>
+            <tr><td><span class="swatch" style="background:#efa900"></span>工具定义</td><td>工具名称、用途、参数和必填项。</td></tr>
+            <tr><td><span class="swatch" style="background:#18bd65"></span>用户消息</td><td>本轮任务、近期主聊天和附件路径等用户侧材料。</td></tr>
+            <tr><td><span class="swatch" style="background:#b15be4"></span>注入上下文</td><td>场景概况、选用的记忆、协作者结果和可观测的压缩摘要。</td></tr>
+            <tr><td><span class="swatch" style="background:#ff8b23"></span>技能注入</td><td>本次加载并纳入输入的技能说明。</td></tr>
+            <tr><td><span class="swatch" style="background:#3982fb"></span>助手消息</td><td>此前产生并进入该请求输入的助手回复。</td></tr>
+            <tr><td><span class="swatch" style="background:#00b3a4"></span>工具结果</td><td>此前产生并进入该请求输入的读取、搜索、命令等返回内容。</td></tr>
+          </tbody>
+        </table></div>
+        <p>浏览器的<strong>搜索</strong>匹配当前请求的条目名称、内容和来源。普通分类视图中，展开分类后可以按<strong>大小 / 名称 / 顺序</strong>排序。<strong>复制</strong>会复制保留的正文。</p>
+        <p><strong>DNA 模式</strong>按请求保存的输入顺序显示条目，彩条颜色表示分类，长度按估算大小分配。它适合核对角色、场景、本轮任务和交接材料的排列。模型的处理过程需要结合输出记录查看。</p>
+        <div class="example"><h4>核对协作者意见是否进入输入</h4><p>选择 Codex 的交叉验证或统一结论步骤，展开“注入上下文”，找到“成员初步结果”或交接材料，再看来源中的成员编号。来源为 DeepSeek 时，可以确认该材料来自 DeepSeek。随后展开阶段输出，检查结论如何回应这条意见。</p></div>
+      </section>
+
+      <section id="context-trend">
+        <h3>2.4　追查输入为什么增长</h3>
+        <p>先选择目标成员，在趋势里切到<strong>步骤</strong>和<strong>增量</strong>，点击变化较大的柱形，再到浏览器切换<strong>新增</strong>，查看新出现或修改过的条目。</p>
+        <figure><a href="images/context-03-delta.png" target="_blank" rel="noopener"><img src="images/context-03-delta.png" alt="真实交叉验证记录的上下文增量趋势，浏览器展示成员初步结果" loading="lazy"></a><figcaption><span class="tag real">真实记录</span>图 5　Codex 进入交叉验证时，注入上下文相对上一请求约增加 696 tokens，可继续展开成员初步结果追查内容。</figcaption></figure>
+        <ul>
+          <li><strong>步骤</strong>显示每条保留的请求或阶段快照。<strong>轮次</strong>显示每位成员在每轮任务中的最后一条输入。</li>
+          <li><strong>总量</strong>显示类别估算。<strong>增量</strong>与同一成员的上一条保留请求比较，比较可能跨任务轮次。没有上一条时，以零为基线。</li>
+          <li><strong>总览</strong>把更多柱形放进同一视野。</li>
+          <li><strong>完整</strong>显示该次保留输入。<strong>新增</strong>显示类别、名称或正文组合发生变化的条目，修改条目会整条显示。</li>
+        </ul>
+        <p>在“新增”视图中，分类标题仍显示该请求的完整类别总量。若输入下降，可结合阶段切换、材料变化和上下文事件判断原因。压缩或清理是否发生，以已记录事件为依据。</p>
+
+        <h3>2.5　上下文事件、文件活动与命令执行</h3>
+        <figure><a href="images/context-06-activity-demo.png" target="_blank" rel="noopener"><img src="images/context-06-activity-demo.png" alt="教学样例中的上下文事件和文件活动，支持筛选、展开及定位关联结果" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 6　上下文事件按类型追踪注入与交接等变化，文件活动按路径汇总已识别的操作。</figcaption></figure>
+        <p><strong>上下文事件</strong>可以按注入、请求、切换、交接、压缩、清理、模式和用量等类型筛选。只有已记录的类型会显示，展开后可查看细节并定位请求。这里的“清理”描述上下文材料的处理。</p>
+        <p><strong>文件活动</strong>支持路径搜索，以及读取、写入、搜索和图片筛选。展开后可以看成员、时间、操作状态和识别到的增删行数，再通过<strong>定位结果</strong>查看关联输出。记录覆盖范围取决于工具提供的信息。</p>
+        <figure><a href="images/context-07-commands-demo.png" target="_blank" rel="noopener"><img src="images/context-07-commands-demo.png" alt="命令执行教学图，展示程序分布、完成与错误状态、退出码和输出" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 7　可按错误筛选并展开命令，读取输出与退出码，再定位到关联请求。图中的路径和命令结果使用预设数据。</figcaption></figure>
+        <p><strong>命令执行</strong>显示程序分布、命令内容、成员、工作目录、状态、耗时和退出码。点击<strong>读取命令输出</strong>加载已保存的结果。运行中需要等待命令结束，未上报的退出码会保留缺失提示。</p>
+        <p>每页最多读取 600 个输入快照、2,000 次工具记录、400 条上下文事件和 400 个文件。出现<strong>查看更早记录</strong>时可以翻页。原生采集最多保留 1,000 个输入条目，单条正文最多 10 万字符，截取内容会标记范围或近似提示。</p>
+        <p>上下文的逐项操作还可以结合专门的图解教程阅读。<a href="context-ui-guide.html">打开上下文界面图解使用指南</a></p>
+      </section>
+    </section>
+
+    <section class="chapter" id="memory">
+      <h2>第三章　记忆</h2>
+      <p>记忆分为场景共享与角色专属两层。场景共享保存 TypeScript 项目事实、共同代码规范、项目边界和“不运行本地编译”等约束。角色专属保存技术方案编写、代码开发、评审和测试各自的方法、经验与偏好。扩展档位继承原角色的记忆。</p>
+      <div class="table-wrap"><table><thead><tr><th>层级或角色</th><th>适合保存的内容</th></tr></thead><tbody><tr><td>场景共享</td><td>手机 App 的技术栈、目录结构、共同规范、项目决策和环境限制。</td></tr><tr><td>技术方案角色</td><td>方案写作偏好、已采用的方案结构、需要保留的决策理由。</td></tr><tr><td>开发角色</td><td>实现工作中的约定、角色专属检查方法、开发经验。</td></tr><tr><td>评审角色</td><td>审查重点、常见缺陷、项目评审经验。</td></tr><tr><td>测试角色</td><td>设备特征、验证经验、测试覆盖要求。手机操作步骤可另外写成技能。</td></tr></tbody></table></div>
+      <p>成员自动获得选中的场景共享材料与自身角色材料。记忆页可按层级筛选，编辑时可选择所属范围。旧记忆默认保留在场景共享层。</p>
+      <figure><a href="images/plugin-04-memory-demo.png" target="_blank" rel="noopener"><img src="images/plugin-04-memory-demo.png" alt="场景记忆教学图，左边是不同状态的条目，右边显示正文、版本、采用和固定开关及来源" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 8　左侧选择条目，右侧查看正文、状态、版本和来源。“后续请求采用”与“固定重要记忆”分别控制参与采用和选取优先级。</figcaption></figure>
+
+      <section id="memory-create">
+        <h3>3.1　知识如何进入记忆</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>来源</th><th>保存方式与状态</th></tr></thead>
+          <tbody>
+            <tr><td>你明确要求记住</td><td>发送包含“请记住”“记下来”等明确表达的任务后，插件把整条消息作为场景约束保存为已确认，并关联原始消息。</td></tr>
+            <tr><td>你手动新增</td><td>到记忆页点击“新增记忆”，选择场景共享或具体角色，填写标题、类型、状态和内容后保存。</td></tr>
+            <tr><td>任务沉淀知识</td><td>成功任务的最终结果可以提出可复用知识，保存为待核实，关联任务和证据。是否新增取决于任务实际提出的知识。</td></tr>
+            <tr><td>成员调用记忆工具</td><td>DeepSeek / DSH 成员可检索场景共享及自身角色记忆，通过 memory_write 保存发现。模型写入进入待核实，角色经验按所属角色保存。</td></tr>
+            <tr><td>导入旧版共享资料</td><td>从旧版资料选择条目导入当前场景，导入后进入待核实并保留来源关联。</td></tr>
+          </tbody>
+        </table></div>
+        <p>自动记住使用的是明确表达的匹配规则，保存内容是这条用户消息的全文。较长任务中夹带的规则，可以在记忆页编辑成独立、容易复用的条目。</p>
+        <p>任务结束时的新知识若与已有<strong>已确认同名条目</strong>内容不同，会被标为<strong>存在冲突</strong>，保留来源供核对。来源可包括用户消息、用户编辑、任务证据、成员和旧库资料。</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>类型值</th><th>用途</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td>constraint</td><td>约束</td><td>操作前先给清单并等待确认。</td></tr>
+            <tr><td>fact</td><td>事实</td><td>已核对的接口路径或工作目录。</td></tr>
+            <tr><td>decision</td><td>决策</td><td>项目已选定的实现方案。</td></tr>
+            <tr><td>preference</td><td>偏好</td><td>交付默认简短，详细过程按需展开。</td></tr>
+            <tr><td>blocker</td><td>阻碍</td><td>某个依赖尚不可用，需要补充条件。</td></tr>
+            <tr><td>learning</td><td>经验知识</td><td>调研后形成、适合后续复用的结论。</td></tr>
+            <tr><td>note</td><td>一般记录</td><td>其他需要在场景中保留的说明。</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="memory-use">
+        <h3>3.2　状态、采用开关与固定</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>状态</th><th>表示什么</th><th>当前采用规则</th></tr></thead>
+          <tbody>
+            <tr><td>已确认</td><td>已作为场景知识或规则确认。</td><td>启用采用后，参与后续任务的筛选。</td></tr>
+            <tr><td>待核实</td><td>需要结合来源进一步核对。</td><td>启用采用后，也可能被选入输入，材料带有状态。</td></tr>
+            <tr><td>存在冲突</td><td>新旧内容存在不同主张。</td><td>启用采用后，也可能参与筛选，需要结合来源处理分歧。</td></tr>
+            <tr><td>已过期、已归档</td><td>保留追溯，暂停当前复用。</td><td>自动选取及成员记忆检索均排除这些状态。</td></tr>
+            <tr><td>已移除</td><td>条目已标记移除并停用。</td><td>排除后续采用，已有记录保留。</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout note"><strong>需要暂停某条知识时，关闭“后续请求采用”。</strong><p>当前实现允许已确认、待核实和存在冲突这三种启用条目参与检索。更改为待核实或存在冲突后，仍要核对采用开关。图 8 中的冲突样例已经关闭采用。</p></div>
+        <p><strong>固定重要记忆</strong>会提高选取优先级。自动组装输入时，还会考虑任务关键词与记忆的关联程度，约束、偏好和决策也有较高优先级。默认记忆预算约为 2,400 个估算 Token，长条目可能被截取或暂不选入。</p>
+        <p>因此，条目启用后仍需到上下文中确认本次是否实际采用。上下文会保存所用记忆的版本和采用原因，后续修订可以与历史请求分开追溯。</p>
+      </section>
+
+      <section id="memory-revisions">
+        <h3>3.3　新增、编辑、停用与恢复版本</h3>
+        <ol>
+          <li>打开<strong>记忆</strong>，资料库选择<strong>当前场景</strong>，在<strong>记忆层级</strong>选择场景共享或具体角色。可以按标题或内容搜索。</li>
+          <li>新增时点击<strong>新增记忆</strong>，已有条目则点击<strong>编辑</strong>。</li>
+          <li>选择<strong>所属范围</strong>，填写标题、类型、内容和状态，然后点击<strong>保存记忆</strong>。</li>
+          <li>回到详情后，按需要调整<strong>后续请求采用</strong>和<strong>固定重要记忆</strong>。</li>
+        </ol>
+        <figure><a href="images/plugin-05-memory-edit-demo.png" target="_blank" rel="noopener"><img src="images/plugin-05-memory-edit-demo.png" alt="记忆编辑教学图，显示标题、类型、状态、内容和保存按钮" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 9　编辑“交付默认简短”的正文和状态。该编辑界面也用于把知识从待核实改为已确认，或标记为过期、归档。</figcaption></figure>
+        <p>条目每次保存都会形成新修订，采用与固定开关的更改也会增加版本。多人或多处同时编辑时，插件会核对版本，出现“资料已在另一处更新”时，刷新后重新核对再保存。</p>
+        <figure><a href="images/plugin-06-memory-history-demo.png" target="_blank" rel="noopener"><img src="images/plugin-06-memory-history-demo.png" alt="修订历史教学图，展开 v1 显示旧正文和恢复此版本按钮" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 10　“修订历史”保留旧正文。展开某个版本后，可以点击“恢复此版本”。</figcaption></figure>
+        <p>恢复旧版本会把所选版本的标题、内容、类型、状态和所属范围保存成一个新修订。采用与固定开关仍可在详情中单独核对。点击<strong>移除</strong>会把条目标记为已移除并关闭采用，历史修订和已保存的请求依据保留。</p>
+      </section>
+
+      <section id="memory-import">
+        <h3>3.4　旧版共享资料与场景隔离</h3>
+        <p>旧版 <code>dsh-memory</code> 的两个库会作为<strong>旧版共享资料</strong>导入。到记忆页右上角切换范围，选择条目并展开来源，再点击<strong>导入当前场景</strong>。</p>
+        <figure><a href="images/plugin-07-legacy-demo.png" target="_blank" rel="noopener"><img src="images/plugin-07-legacy-demo.png" alt="旧版共享资料教学图，详情中显示来源和导入当前场景按钮" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 11　旧库资料可以关联到当前场景。导入后切回“当前场景”，核对内容、状态和采用设置。</figcaption></figure>
+        <p>导入形成当前场景的条目并保留旧库来源。后续编辑作用于该场景条目。新场景有自己的记忆集合，旧库资料需要按场景选择导入。</p>
+
+        <h3>3.5　在上下文中核对记忆是否生效</h3>
+        <ol>
+          <li>发出一轮相关任务，然后打开<strong>上下文</strong>。</li>
+          <li>选成员和对应步骤，展开<strong>注入上下文</strong>。</li>
+          <li>找到记忆条目，检查正文、采用原因和<strong>来源与版本</strong>。</li>
+          <li>有<strong>查看来源</strong>时，可回到记忆页继续管理。</li>
+        </ol>
+        <figure class="portrait"><a href="images/context-05-memory-demo.png" target="_blank" rel="noopener"><img src="images/context-05-memory-demo.png" alt="上下文中的记忆教学图，显示清理前先确认记忆、用户固定原因和 v2 来源" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 12　另一场景中的“清理前先确认”以 v2 进入输入，采用原因为用户固定。条目之后更新时，这次输入仍保留当时的版本依据。</figcaption></figure>
+        <p>若没有找到，依次核对场景、成员、请求步骤、记忆状态、采用开关及相关程度。原生请求的来源可能只追溯到运行时消息，可以搜索正文，再结合阶段输入核对。</p>
+      </section>
+    </section>
+
+    <section class="chapter" id="workflow">
+      <h2>把三个部分连起来使用</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>步骤</th><th>操作</th><th>对应部分</th></tr></thead>
+        <tbody>
+          <tr><td>建立项目场景</td><td>在团队页填写项目目录、目标和边界，配置 Codex 实现、DeepSeek 审查。</td><td>协作</td></tr>
+          <tr><td>留下持续规则</td><td>发送“请记住，交付默认简短，详细依据放在成员过程”，到记忆页核对保存内容。</td><td>记忆</td></tr>
+          <tr><td>推进一项需求</td><td>选择统筹模式和 Codex Owner，发送通知开关需求，查看分工与交付。</td><td>协作</td></tr>
+          <tr><td>追查执行依据</td><td>选对应成员和步骤，核对任务、技能、记忆、交接材料及工具输出。</td><td>上下文</td></tr>
+          <tr><td>核实新知识</td><td>在记忆页检查接口路径等候选知识及来源，确认后编辑状态，处理冲突条目。</td><td>记忆</td></tr>
+          <tr><td>继续下一项任务</td><td>沿用这个场景发起后续需求，检查新请求是否采用了正确版本。</td><td>协作、上下文、记忆</td></tr>
+        </tbody>
+      </table></div>
+      <p>需要交叉核查方案时，可以在下一轮切换到置信模式。成员依据各自职责处理同一问题，最终把通过检查的结论汇总到主聊天。场景中的已保存知识可以继续供相关任务选用。</p>
+    </section>
+
+    <section id="data">
+      <h2>数据保存与恢复</h2>
+      <p>场景、成员配置、任务、消息、执行事件、记忆修订和上下文快照保存在本机。刷新页面或重新打开面板会恢复已有资料，断线后支持补发持久化事件。DSH 重启时，活动任务会标为运行中断，随后可选择接续。</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>位置</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td><code>~/.dsh/codex-chat/scenarios.sqlite</code></td><td>当前工作区的主要持久化数据。</td></tr>
+          <tr><td><code>~/.dsh/codex-chat/migration-backup-v1/</code></td><td>首次迁移前的旧对话与记忆备份。</td></tr>
+          <tr><td><code>&lt;会话工作区&gt;/.dsh-codex-uploads/</code></td><td>上传附件的本地文件。</td></tr>
+          <tr><td><code>%TEMP%/dsh-codex-chat.log</code></td><td>插件诊断日志，供排查加载和运行问题。</td></tr>
+          <tr><td>当前浏览器本地偏好</td><td>成员框高度等显示偏好，按场景保存在当前浏览器。</td></tr>
+        </tbody>
+      </table></div>
+      <p>通过顶部<strong>场景</strong>按钮可创建场景、把当前会话绑定到已有场景，并查看关联会话。DSH 原生面板随当前 Session 恢复绑定，需求聊天按会话保留，场景和角色知识持续复用。</p>
+    </section>
+
+    <section id="mac">
+      <h2>迁移到 Mac</h2>
+      <p>源码发布在公开的 dsh-team-chat 仓库。Mac 可以通过 DSH 插件管理安装 Git 来源 <code>git+https://github.com/ybcbcc/dsh-team-chat.git#main</code>，也可以先克隆，再安装本地目录。<a href="https://github.com/ybcbcc/dsh-team-chat" target="_blank" rel="noopener">打开 GitHub 仓库</a></p>
+      <p>界面、协作逻辑与 SQLite 数据层可以共用源码。DSH 提供统一插件接口，实际目录、系统命令和 Codex 外部进程仍依赖当前操作系统。本次已补充系统 PATH、Homebrew 等常见 Node/Codex 路径发现，macOS 实机运行仍待验证。</p>
+      <ol><li>在 Mac 安装相应版本的 DSH，并安装 Mac 对应架构的 Codex，完成当地的授权和模型配置。</li><li>通过 Git 同步插件源码，在 Mac 安装对应依赖及插件。</li><li>在团队页选择 Mac 项目目录，重新核对模型、技能和思考强度。</li><li>需要迁移知识时，先停止 DSH，再备份并复制 <code>~/.dsh/codex-chat/</code> 到 Mac。</li><li>在 Mac 新建需求会话，绑定迁移过来的场景。旧证据与附件路径保留原始记录，新任务需要提供 Mac 上可访问的文件与技能路径。</li></ol>
+      <p>源码同步与场景数据迁移分别完成。Git 仓库用于代码，SQLite 保存知识和任务记录，账号授权在 Mac 当地配置。Windows 的 Junction 和已有二进制依赖需按 Mac 环境重新安装。</p>
+    </section>
+
+    <section id="quick-reference">
+      <h2>问题速查</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>你遇到的情况</th><th>查看或操作位置</th></tr></thead>
+        <tbody>
+          <tr><td>想改变某位成员的模型或职责</td><td>团队页修改并保存，下一轮生效。</td></tr>
+          <tr><td>统筹模式无法发送</td><td>核对输入区是否已选择 Owner，以及场景是否还有活动任务。</td></tr>
+          <tr><td>DeepSeek 无法启动</td><td>在场景管理中核对当前需求会话的关联关系，以及 DSH 运行时是否可用。</td></tr>
+          <tr><td>结论仍有争议</td><td>查看任务状态及成员审查意见，展开原始结果与证据。</td></tr>
+          <tr><td>成员框太小或过程太长</td><td>拖动分隔条调整高度，在成员框内部滚动，或收起暂时不看的成员。</td></tr>
+          <tr><td>想确认成员有没有收到资料</td><td>上下文页选成员、步骤，展开相应类别和来源。</td></tr>
+          <tr><td>输入突然增长</td><td>趋势切增量，点柱形，再到浏览器看新增材料。</td></tr>
+          <tr><td>知识过时或存在冲突</td><td>记忆页核对来源和版本，编辑内容或关闭后续请求采用。</td></tr>
+          <tr><td>记忆刚修改，旧记录仍显示旧正文</td><td>旧请求保留当时版本，核对新任务的输入记录。</td></tr>
+          <tr><td>任务中断</td><td>查看已有操作和错误，点击接续这项任务。</td></tr>
+        </tbody>
+      </table></div>
+      <p>源码结构、接口和协议约定集中在项目 README，便于后续开发者接手。<a href="../README.md">查看项目 README</a></p>
+    </section>
+    <footer>本手册按当前插件界面与实现编写。上下文布局和交互参考 DSH-Context，采集范围与数据口径以本插件实际记录为准。<a href="https://github.com/bowenliang123/dsh-context" target="_blank" rel="noopener">查看 DSH-Context 项目</a></footer>
+  </main>
+</div>
+</body>
+</html>

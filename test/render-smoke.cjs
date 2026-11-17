@@ -97,6 +97,9 @@ async function main() {
   const parents = new Map([[parent.id, parent]]);
   let createdSessions = 0;
   let externalCalls = 0;
+  const workspaceSessions = new Set();
+  const nativeWorkspace = { id: 'workspace-render', path: temporary, title: '渲染工作区',
+    attachSession: async sessionId => { workspaceSessions.add(sessionId); } };
   const result = {
     summary: '阶段处理完成，已保留证据。\n' + '这是一条用于检查成员独立滚动的过程记录。\n'.repeat(40), verdict: 'approved', needsExecution: false,
     answer: '工作区和团队协作流程已完成，来源可从上下文查看。', complete: true,
@@ -144,13 +147,21 @@ async function main() {
       skills: { list: async () => [], get: async () => undefined },
       loader: { entries: () => [{ options: { config: { providerName: 'test-agent' } } }] },
       sessionController: {
-        create: async () => {
+        create: async request => {
+          assert.deepEqual(request, { workspaceId: nativeWorkspace.id }, 'New requirements join the scene native Workspace');
           const id = `session-created-${++createdSessions}`;
-          parents.set(id, { ...parent, id, session: { id } });
+          parents.set(id, { ...parent, id, session: { id }, title: '' });
+          workspaceSessions.add(id);
           return { sessionId: id };
         },
-        rename: async () => ({}),
+        rename: async request => { parents.get(request.sessionId).title = request.title; return {}; },
+        list: async () => ({ items: [...parents.values()].map(parent => ({ sessionId: parent.session.id, cwd: temporary, title: parent.title || '' })) }),
       },
+      workspaceController: { create: async request => {
+        assert.equal(request.path, temporary);
+        return { workspace: { workspaceId: nativeWorkspace.id }, created: false };
+      } },
+      workspaceRegistry: { get: id => id === nativeWorkspace.id ? nativeWorkspace : undefined },
       effect: operation => { const cleanup = operation(); if (cleanup) cleanups.push(cleanup); } });
     },
   };
@@ -291,6 +302,9 @@ async function main() {
     await page.locator('[data-view="team"]').click();
     const extra = page.locator('[data-agent-field="engine"]').last();
     const extraId = await extra.getAttribute('data-agent');
+    assert.equal(await extra.isDisabled(), true, 'Member settings start locked');
+    await page.locator(`details[data-detail="profile-${extraId}"] > summary`).click();
+    await page.locator(`[data-action="edit-member"][data-agent="${extraId}"]`).click();
     await extra.selectOption('agent');
     await page.locator(`[data-agent-field="agentProvider"][data-agent="${extraId}"]`).fill('test-agent');
     await page.locator(`[data-agent-field="role"][data-agent="${extraId}"]`).click();
@@ -335,11 +349,82 @@ async function main() {
     assert.equal(await page.locator('.sc-message-user').count(), 0, 'Late refreshes never copy the previous requirement into the new chat');
     const list = await (await page.request.get(`${origin}/codex-chat/v2/scenarios`)).json();
     const sceneId = list.scenes[0].id;
+    assert.ok(workspaceSessions.has('session-created-1'));
+    assert.match(await page.locator('.sc-heading').innerText(), /当前需求 · 下一项独立需求/);
+    const prepared = await (await page.request.post(`${origin}/codex-chat/v2/scenarios/${sceneId}/sessions/session-render-session/open`, { data: {} })).json();
+    assert.equal(prepared.nativeSessionId, 'render-session', 'Opening a legacy binding retains the native identity');
+    assert.ok(workspaceSessions.has('render-session'), 'Opening an existing loose session registers its matching Workspace');
     const repeated = await page.request.post(`${origin}/codex-chat/v2/scenarios/${sceneId}/sessions`, { data: sessionRequest });
     assert.equal(repeated.status(), 200);
     assert.equal(createdSessions, 1, 'Retrying session creation keeps the same DSH Session');
+    const currentScene = (await (await page.request.get(`${origin}/codex-chat/v2/scenarios/${sceneId}`)).json()).scene;
+    await page.request.delete(`${origin}/codex-chat/v2/scenarios/${sceneId}/sessions/session-created-1`, { data: { revision: currentScene.revision } });
+    const detachedRetry = await page.request.post(`${origin}/codex-chat/v2/scenarios/${sceneId}/sessions`, { data: sessionRequest });
+    assert.equal(detachedRetry.status(), 409, 'Creation retries respect an explicit unbinding');
+    await page.request.post(`${origin}/codex-chat/v2/bootstrap`, {
+      data: { scenarioId: sceneId, dshSessionId: 'session-created-1', sessionTitle: '下一项独立需求', bind: true },
+    });
+    await page.reload();
+    await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+
+    const management = await (await page.request.post(`${origin}/codex-chat/v2/bootstrap`, {
+      data: { create: true, cwd: temporary, sessionTitle: '会话管理检查' },
+    })).json();
+    const otherId = management.scene.id;
+    await page.request.post(`${origin}/codex-chat/v2/bootstrap`, {
+      data: { scenarioId: otherId, dshSessionId: 'management-other', sessionTitle: '另一场景的需求', bind: true },
+    });
+    await page.locator('[data-action="scenes"]').first().click();
+    const otherCard = page.locator(`[data-scene-choice="${otherId}"]`);
+    assert.match(await otherCard.innerText(), /另一场景的需求/);
+    assert.match(await otherCard.innerText(), /session-management-other/);
+    assert.match(await page.locator(`[data-scene-choice="${sceneId}"] [data-bound-session="session-created-1"]`).innerText(), /当前会话/);
+    for (const width of [360, 760, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await page.locator('[aria-label="场景列表"]').evaluate(element => element.scrollWidth > element.clientWidth + 1), false,
+        `Scene management fits width ${width}`);
+    }
+    await otherCard.locator('[data-action="open-demand"]').click();
+    await page.waitForURL('**dshSession=session-management-other**');
+    await page.locator('.sc-heading').filter({ hasText: '会话管理检查' }).waitFor();
+    await page.locator('[data-action="scenes"]').first().click();
+    await page.locator(`[data-scene-choice="${otherId}"] [data-action="unbind-session"]`).click();
+    await page.getByRole('alertdialog', { name: '解除绑定确认' }).waitFor();
+    await page.locator('[data-action="cancel-scene-action"]').click();
+    assert.equal((await (await page.request.get(`${origin}/codex-chat/v2/scenarios/${otherId}`)).json()).scene.sessions.length, 1);
+    await page.locator(`[data-scene-choice="${otherId}"] [data-action="unbind-session"]`).click();
+    await page.locator('[data-action="confirm-scene-action"]').click();
+    await page.getByRole('heading', { name: '为当前需求选择场景' }).waitFor();
+    const unbound = (await (await page.request.get(`${origin}/codex-chat/v2/scenarios/${otherId}`)).json()).scene;
+    assert.equal(unbound.sessions.length, 0);
+    assert.equal(unbound.dshSessionId, '', 'Unbinding clears the old resume anchor');
+    await page.locator(`[data-scene-choice="${sceneId}"] [data-action="bind-scene"]`).click();
+    await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+    await page.locator('[data-action="scenes"]').first().click();
+
+    const { ScenarioStore } = await import(pathToFileURL(path.join(root, 'scenario-store.js')).href);
+    const inspection = new ScenarioStore(path.join(temporary, 'codex-chat'));
+    try {
+      const stale = await page.request.delete(`${origin}/codex-chat/v2/scenarios/${otherId}`, { data: { revision: unbound.revision - 1 } });
+      assert.equal(stale.status(), 409);
+      inspection.saveMemory({ scenarioId: otherId, title: '删除清理检查', content: '仅用于临时场景检查' });
+      inspection.saveRun({ id: 'management-active', scenarioId: otherId, requestId: 'management-active',
+        createdAt: new Date().toISOString(), state: 'working', sessionId: 'local-management' });
+      const active = await page.request.delete(`${origin}/codex-chat/v2/scenarios/${otherId}`, { data: { revision: unbound.revision } });
+      assert.equal(active.status(), 409, 'Active work protects the scene from deletion');
+      inspection.saveRun({ ...inspection.run('management-active'), state: 'completed' });
+      await page.locator(`[data-scene-choice="${otherId}"] [data-action="delete-scene"]`).click();
+      await page.getByRole('alertdialog', { name: '删除场景确认' }).waitFor();
+      await page.locator('[data-action="confirm-scene-action"]').click();
+      await page.locator(`[data-scene-choice="${otherId}"]`).waitFor({ state: 'detached' });
+      assert.equal((await page.request.get(`${origin}/codex-chat/v2/scenarios/${otherId}`)).status(), 404);
+      assert.equal(inspection.memories(otherId).length, 0);
+      assert.equal(inspection.db.prepare('SELECT COUNT(*) AS count FROM memory_revisions WHERE id NOT IN (SELECT id FROM memories)').get().count, 0);
+      assert.equal(inspection.db.prepare('PRAGMA foreign_key_check').all().length, 0);
+      assert.ok(parents.has('session-created-1'), 'DSH Sessions retain their native lifetime');
+    } finally { inspection.close(); }
     assert.deepEqual(errors, []);
-    console.log('Render smoke passed: modes, member resizing, memory, context, external Agents, new Sessions, creation retries, and late-refresh isolation.');
+    console.log('Render smoke passed, including per-scene session lists, cross-scene navigation, unbinding, deletion, and active-task protection.');
   } finally {
     releaseRefresh();
     await browser?.close();

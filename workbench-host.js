@@ -41,7 +41,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   const sessionCreations = new Map()
   const backendNames = new Set(['spawn', 'fork', 'codex', 'claude-code', 'claude', 'acp', 'dsh-sdk'])
   let closed = false
-  for (const name of ['llm', 'skills', 'loader', 'sessionController']) {
+  for (const name of ['llm', 'skills', 'loader', 'sessionController', 'workspaceController', 'workspaceRegistry']) {
     ctx.inject([name], inner => {
       optional[name] = inner[name]
       inner.effect(() => () => { delete optional[name] }, `codex-chat: optional ${name}`)
@@ -63,8 +63,15 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
 
   ctx.on('tools/pre-execute', async (execution, next) => {
     const child = children.get(String(execution.agent?.session?.id))
-    if (child?.readOnly && !READ_TOOLS.has(execution.name)) {
+    if (child?.readOnly && (!READ_TOOLS.has(execution.name) || (child.agent.permission === 'read-only' && execution.name === 'memory_write'))) {
       return { kind: 'deny', reason: '当前协作阶段进行资料读取与审查，修改与执行由团队的执行阶段处理。' }
+    }
+    if (child?.agent.engine === 'dsh' && child.agent.permission === 'approve' && !child.readOnly && !READ_TOOLS.has(execution.name)) {
+      child.signal.throwIfAborted()
+      const response = await child.onQuestion({ kind: 'approval', details: JSON.stringify({ tool: execution.name, arguments: execution.arguments }, null, 2),
+        questions: [{ id: 'approval', header: '工具审批', question: '是否允许本次工具操作？', options: [{ label: '允许本次' }, { label: '拒绝' }] }] })
+      child.signal.throwIfAborted()
+      if (response?.answers?.approval?.answers?.[0] !== '允许本次') return { kind: 'deny', reason: '用户拒绝了本次操作。' }
     }
     return next()
   })
@@ -166,7 +173,6 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   }
 
   async function runAgent(request) {
-    request = { ...request, signal: AbortSignal.any([request.signal, AbortSignal.timeout(15 * 60 * 1000)]) }
     request.signal.throwIfAborted()
     if (request.agent.engine === 'dsh') return runDsh(request)
     if (request.agent.engine === 'agent') return runDsh(request, request.agent.agentProvider)
@@ -175,7 +181,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     if (request.agent.effort && model?.efforts?.length && !model.efforts.includes(request.agent.effort)) {
       fail('所选 Codex 模型不支持这个思考强度，请调整对应扩展成员')
     }
-    const options = { effort: request.agent.effort, fast: request.agent.fast === true, readOnly: request.readOnly }
+    const options = { effort: request.agent.effort, fast: request.agent.fast === true, readOnly: request.readOnly, permission: request.agent.permission || 'default', turnTimeoutMs: 0 }
     const channel = createChannel(resolveLauncher(process.env.DSH_CODEX_BIN), request.run.scene.cwd,
       request.agent.model || process.env.DSH_CODEX_MODEL || undefined,
       { onDelta: request.onDelta, onQuestion: request.onQuestion,
@@ -191,11 +197,11 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         },
       }, options)
     channels.add(channel)
-    const stop = () => channel.close()
+    const stop = () => channel.close(request.signal.reason?.message || '任务已停止')
     request.signal.addEventListener('abort', stop, { once: true })
     try {
       await channel.start(request.signal)
-      request.onEvent('thread.started', { threadId: channel.threadId, model: channel.model, effort: channel.effort || options.effort, readOnly: request.readOnly })
+      request.onEvent('thread.started', { threadId: channel.threadId, model: channel.model, effort: channel.effort || options.effort, permission: options.permission, readOnly: request.readOnly })
       return await channel.send(request.prompt, request.signal, request.run.attachments)
     } finally {
       request.signal.removeEventListener('abort', stop)
@@ -240,7 +246,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       request.onEvent('thread.started', { threadId: String(activation.childId || childId),
         model: canSelectModel ? model : undefined, provider: canSelectModel ? provider : undefined,
         effort: canSelectModel ? agentOptions.reasoningEffort || parent.options?.reasoningEffort : undefined,
-        agentProvider: providerName, permissionSource: request.agent.engine === 'agent' ? 'provider-config' : 'tool-filter', readOnly: request.readOnly })
+        agentProvider: providerName, permissionSource: request.agent.engine === 'agent' ? 'provider-config' : 'tool-filter', permission: request.agent.permission || 'default', readOnly: request.readOnly })
       if (request.signal.aborted) stop()
       const result = await activation.result
       return { answer: result.structured ? JSON.stringify(result.structured) : textBlocks(result.output), status: result.stopReason, diagnostic: result.diagnostic }
@@ -306,6 +312,8 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
             fail('这个 Agent 的模型和强度由接入配置管理，不支持成员覆盖或扩展强度档位')
           }
         }
+        const permissions = agent.engine === 'codex' ? ['default', 'read-only', 'approve', 'full'] : agent.engine === 'dsh' ? ['default', 'read-only', 'approve'] : ['default']
+        if (!permissions.includes(agent.permission || 'default')) fail('当前接入不支持这个执行权限，请重新选择')
         if (typeof agent.name !== 'string' || !agent.name.trim()) fail('请填写成员名称')
         if (typeof agent.role !== 'string' || !agent.role.trim()) fail('请填写成员职责')
         const variants = Array.isArray(agent.variants) ? agent.variants : []
@@ -318,8 +326,9 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         return { id: agent.id, roleId: scene.agents.find(item => item.id === agent.id)?.roleId || agent.id,
           engine: agent.engine, agentProvider: agent.engine === 'agent' ? agent.agentProvider.trim().slice(0, 200) : '',
           name: agent.name.slice(0, 80), role: agent.role.slice(0, 4000),
+          roleSummary: String(agent.roleSummary || '').slice(0, 120), showRoleSummary: agent.showRoleSummary === true,
           model: String(agent.model || '').slice(0, 200), provider: String(agent.provider || '').slice(0, 200),
-          effort: String(agent.effort || '').slice(0, 80), fast: agent.fast === true,
+          effort: String(agent.effort || '').slice(0, 80), fast: agent.fast === true, permission: agent.permission || 'default',
           variants: variants.map(variant => ({ id: variant.id, name: String(variant.name || '扩展成员').slice(0, 80),
             effort: String(variant.effort || '').slice(0, 80), difficulty: variant.difficulty })),
           skills: Array.isArray(agent.skills) ? [...new Set(agent.skills.filter(name => typeof name === 'string').map(name => name.slice(0, 200)))].slice(0, 20) : [] }
@@ -332,7 +341,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         if (!skill || typeof skill.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(skill.id) || ids.has(skill.id)) fail('技能编号缺失或重复')
         ids.add(skill.id)
         if (typeof skill.name !== 'string' || !skill.name.trim() || typeof skill.content !== 'string' || !skill.content.trim()) fail('请填写技能名称和操作说明')
-        return { id: skill.id, name: skill.name.trim().slice(0, 200), content: skill.content.slice(0, 30000) }
+        return { id: skill.id, name: skill.name.trim().slice(0, 200), content: skill.content.slice(0, 30000), category: typeof skill.category === 'string' ? skill.category.trim().slice(0, 100) : '' }
       })
     }
     if (next.ownerId && !next.agents.some(agent => agent.id === next.ownerId)) next.ownerId = ''
@@ -340,10 +349,11 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     return next
   }
 
-  async function catalog(scene) {
-    const result = { codex: [], dsh: [], skills: [], agentBackends: registeredBackends(scene), errors: [] }
+  async function catalog(scene, refresh = false) {
+    const result = { codex: [], dsh: [], skills: [], agentBackends: registeredBackends(scene), errors: [],
+      permissionModes: { codex: ['default', 'read-only', 'approve', 'full'], dsh: ['default', 'read-only', 'approve'], agent: ['default'] } }
     const jobs = [
-      availableModels().then(models => { result.codex = models }),
+      availableModels({ refresh }).then(models => { result.codex = models }),
       (async () => {
         if (!optional.llm) return
         for (const provider of optional.llm.listProviders()) {
@@ -385,6 +395,31 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     }).filter(Boolean)
   }
 
+  async function sceneWorkspace(scene) {
+    if (!optional.workspaceController || !optional.workspaceRegistry) return undefined
+    const result = await optional.workspaceController.create({ path: checkCwd(scene.cwd) })
+    const workspace = optional.workspaceRegistry.get(result.workspace.workspaceId)
+    if (!workspace) fail('DSH 工作区登记后暂不可用，请重试', 503)
+    return workspace
+  }
+
+  async function prepareSession(scene, sessionId) {
+    sessionId = canonicalSessionId(sessionId)
+    const binding = scene.sessions.find(session => session.id === sessionId)
+    if (!binding) fail('这个会话尚未绑定当前场景', 409)
+    const list = optional.sessionController?.list
+      ? await optional.sessionController.list({}, AbortSignal.timeout(10000)) : undefined
+    const native = list?.items.find(session => canonicalSessionId(session.sessionId) === sessionId)
+    const nativeSessionId = native?.sessionId || String(findParent(sessionId)?.session.id || sessionId)
+    let workspace
+    if (native?.cwd && existsSync(native.cwd) && checkCwd(native.cwd) === checkCwd(scene.cwd)) {
+      workspace = await sceneWorkspace(scene)
+      if (workspace) await workspace.attachSession(nativeSessionId)
+    }
+    return { sessionId, nativeSessionId, sessionTitle: native?.title || binding.title || '',
+      workspace: workspace ? { id: workspace.id, title: workspace.title, path: workspace.path } : undefined }
+  }
+
   async function createScenarioSession(scene, body) {
     if (typeof body.requestId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(body.requestId)) fail('缺少本次创建会话的标识')
     const title = String(body.title || '新需求').trim()
@@ -396,13 +431,16 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       if (receipt && receipt.scenarioId !== scene.id) fail('创建标识属于另一个场景')
       if (!receipt) {
         if (!optional.sessionController?.create) fail('当前 DSH 未提供会话创建服务，请通过 DSH 左上角新建会话后绑定', 503)
-        const created = await optional.sessionController.create({ cwd: checkCwd(scene.cwd) })
+        const workspace = await sceneWorkspace(scene)
+        const created = await optional.sessionController.create(workspace ? { workspaceId: workspace.id } : { cwd: checkCwd(scene.cwd) })
         if (typeof created.sessionId !== 'string' || !created.sessionId) fail('DSH 未返回有效的新会话编号')
         receipt = { id: body.requestId, scenarioId: scene.id, nativeSessionId: created.sessionId, sessionId: canonicalSessionId(created.sessionId) }
         store.transaction(() => {
           store.saveSessionRequest(receipt)
           store.bindSession(scene.id, receipt.sessionId, title)
         })
+      } else if (store.sessionScene(receipt.sessionId)?.id !== scene.id) {
+        fail('该会话已解除绑定或改绑，请刷新会话列表', 409)
       }
       if (optional.sessionController?.rename) await optional.sessionController.rename({ sessionId: receipt.nativeSessionId || receipt.sessionId, title })
       const updated = store.bindSession(scene.id, receipt.sessionId, title)
@@ -487,12 +525,14 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       if (route[0] === 'bootstrap' && req.method === 'POST') {
         const body = await readJsonBody(req)
         const sessionId = canonicalSessionId(body.dshSessionId)
+        const previous = sessionId ? store.sessionScene(sessionId) : undefined
         let scene
         if (body.scenarioId) {
           scene = sceneFor(body.scenarioId)
           if (body.bind && sessionId) scene = store.bindSession(scene.id, sessionId, String(body.sessionTitle || ''))
           else if (sessionId && store.sessionScene(sessionId)?.id !== scene.id) fail('请先将当前会话绑定到这个场景')
         } else if (body.create) {
+          if (previous) store.assertNoActiveRun(previous.id, sessionId)
           scene = store.resolve('', checkCwd(body.cwd))
           if (body.sessionTitle) scene = store.saveScenario({ ...scene, title: String(body.sessionTitle).slice(0, 200) })
           if (sessionId) scene = store.bindSession(scene.id, sessionId, String(body.sessionTitle || ''))
@@ -505,6 +545,10 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           if (!scene) scene = store.resolve(sessionId, checkCwd(body.cwd))
         }
         if (!scene.cwd) scene = store.saveScenario({ ...scene, cwd: checkCwd(body.cwd) })
+        if ((body.bind || body.create) && sessionId) {
+          if (previous && previous.id !== scene.id) publish(store.event(previous.id, null, 'scenario.updated', { scene: store.scenario(previous.id) }))
+          publish(store.event(scene.id, null, 'scenario.updated', { scene }))
+        }
         const activeSession = sessionId || scene.sessions.at(-1)?.id || `local-${scene.id}`
         writeJson(res, { ok: true, ...stateOf(scene.id, undefined, activeSession) })
         return true
@@ -529,12 +573,46 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           writeJson(res, { ok: true, scene: next })
           return true
         }
-        if (route[2] === 'catalog' && req.method === 'GET') {
-          writeJson(res, { ok: true, ...await catalog(scene) })
+        if (route.length === 2 && req.method === 'DELETE') {
+          const body = await readJsonBody(req)
+          if (!Number.isInteger(body.revision)) fail('删除场景需要携带当前版本')
+          store.deleteScenario(scene.id, body.revision)
+          publish({ type: 'scenario.deleted', scenarioId: scene.id })
+          writeJson(res, { ok: true, deletedScenarioId: scene.id })
           return true
         }
-        if (route[2] === 'sessions' && req.method === 'POST') {
+        if (route[2] === 'skill' && route.length === 3 && req.method === 'GET') {
+          const name = url.searchParams.get('name')
+          const custom = (scene.customSkills || []).find(skill => `custom:${skill.id}` === name)
+          if (custom) writeJson(res, { ok: true, skill: custom })
+          else {
+            if (!optional.skills) fail('技能服务当前不可用')
+            const skills = await optional.skills.list({ cwd: scene.cwd })
+            if (!skills.some(skill => skill.name === name)) fail('此技能已不在当前工作区目录中，请刷新技能目录')
+            const skill = await optional.skills.get(name, { cwd: scene.cwd })
+            if (!skill) fail('技能原文当前无法加载')
+            writeJson(res, { ok: true, skill: { name: skill.name, content: skill.content, path: skill.path } })
+          }
+          return true
+        }
+        if (route[2] === 'catalog' && req.method === 'GET') {
+          writeJson(res, { ok: true, ...await catalog(scene, url.searchParams.get('refresh') === '1') })
+          return true
+        }
+        if (route[2] === 'sessions' && route.length === 3 && req.method === 'POST') {
           writeJson(res, { ok: true, ...await createScenarioSession(scene, await readJsonBody(req)) })
+          return true
+        }
+        if (route[2] === 'sessions' && route.length === 5 && route[4] === 'open' && req.method === 'POST') {
+          writeJson(res, { ok: true, ...await prepareSession(scene, decodeURIComponent(route[3])) })
+          return true
+        }
+        if (route[2] === 'sessions' && route.length === 4 && req.method === 'DELETE') {
+          const body = await readJsonBody(req)
+          if (!Number.isInteger(body.revision)) fail('解除绑定需要携带场景当前版本')
+          const next = store.unbindSession(scene.id, decodeURIComponent(route[3]), body.revision)
+          publish(store.event(scene.id, null, 'scenario.updated', { scene: next }))
+          writeJson(res, { ok: true, scene: next })
           return true
         }
         if (route[2] === 'upload' && req.method === 'POST') {

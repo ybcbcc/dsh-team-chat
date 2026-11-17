@@ -13,7 +13,11 @@
 - 场景保存长期项目资料。一个场景可绑定多个 DSH Session，每个 Session 保存自己的需求对话，复用场景与角色记忆。已有单会话场景自动迁移。
 - 新会话首次打开时，可以创建场景，或选择已有场景绑定。场景名称描述长期项目，会话名称描述当前需求。内部 Session 编号不再作为手填设置项。
 - 在插件顶部点击“新建需求会话”，填写需求名称后创建。新会话由 DSH 创建并自动关联当前场景。场景列表支持打开关联会话，创建请求支持重试去重。
+- 新建需求会话使用场景目录对应的 DSH 工作区登记。打开已有会话时，目录匹配的未分组会话会补齐工作区关联。插件顶部显示当前需求名称和资料目录，记忆标签显示场景条数。DSH 原生空会话按宿主规则显示“新会话”，插件使用已保存的需求名称。
+- 场景列表逐个展示关联会话的名称、编号及当前会话标记，支持解除绑定和删除场景。解除绑定后可重新选择场景，已有需求记录继续保存在原场景。删除场景会清理插件内的场景设置、记忆及协作记录，并解除全部关联，DSH 原生会话由宿主管理。活动任务结束后可执行这些管理操作。
 - 主聊天显示用户任务和团队结论。右侧按参与成员显示独立过程，可单独折叠、全部收起或拖动调整左右宽度。
+- 成员完整职责在团队页点击展开，编辑时输入区随内容增高。可独立填写简短职责，并选择是否显示在过程标题；完整职责继续用于角色提示词。成员过程标题显示模型与实际强度，折叠状态按场景与任务轮次保存。
+- Owner 的本轮分工和成员过程均可查看下发指令、验收要求与依赖。基础档位显示成员配置的实际思考强度，扩展档位显示对应名称与强度。
 - 展开的成员框各自滚动。拖动成员框之间的横向分隔条可调整高度，双击恢复均分，也可聚焦分隔条后使用上下方向键。高度比例按场景保存在当前浏览器，刷新与重新展开后恢复。
 - 点击“展开工作区”使用 DSH 官方的全屏右侧栏。发出任务时会自动展开。窄面板通过“主聊天”和“成员过程”切换。
 - 团队页设置名称、引擎、角色、真实模型、默认强度和技能，工作区支持原生文件夹选择及浏览器目录选择。
@@ -24,6 +28,8 @@
 ## 接入新模型与其他 Agent
 
 新增模型时，先在 DSH 的模型设置中配置对应供应商、模型和授权。在本插件团队页点击“刷新模型与技能”，成员接入方式选择“DSH 模型供应商”，再选择真实模型及其支持的强度。供应商需要相应的 DSH 模型插件支持。
+
+Codex 直接接入从实际启动程序的 `model/list` 获取目录。启动顺序为 `DSH_CODEX_BIN` 显式指定、系统 PATH 中的 Codex、已安装桌面版的 CLI 缓存、profile 内的 `@openai/codex`。手动点击“刷新模型与技能”会立即重新查询模型，普通加载使用五分钟缓存。
 
 新增独立 Agent 时，先在 DSH 安装并启用对应 Agent 接入插件，如 Claude Code、ACP 或自定义 SDK Agent。添加成员，将接入方式设为“其他 Agent · DSH 接入”，从已启用接入中选择，或填写该插件注册的接入名称。保存职责和技能后即可参与两种协作流程。
 
@@ -48,6 +54,14 @@
 两种模式共用场景、成员与技能设置。置信模式显示交叉验证及汇总成员设置，统筹模式显示 Owner 设置。任务分工位于对话右侧的“本轮分工”。
 
 Codex 在资料读取和审查阶段启动 `read-only` 线程。DSH 原生成员通过 `tools/pre-execute` 限定读取工具。外部 Agent 接收阶段读取要求，实际执行权限由其 DSH 接入配置管理，快照记录权限来源。实际修改阶段沿用执行引擎与用户的既有授权。工作区内的写入阶段按工作区串行调度。
+
+## 成员快捷设置与执行权限
+
+对话底栏显示成员的模型与思考强度。点击成员或“＋N 位”向上展开快捷面板，可切换全部成员，点击“编辑”调整模型、强度和执行权限，保存后应用。团队卡片收起时也显示模型和强度。
+
+Codex 成员支持工作区自动审核、工作区人工审批、完全权限和只读。人工审批通过主聊天展示命令、文件修改或额外权限申请，选择允许本次或拒绝。完全权限用于执行阶段，使用 `danger-full-access` 与 `approvalPolicy: never`。调研和审查阶段继续使用只读配置，成员的只读设置也应用于执行阶段。
+
+DSH 模型成员支持继承宿主权限、操作工具执行前人工审批和只读工具限制。DSH 宿主权限继续生效。其他 Agent 的权限由各自接入插件管理。权限调整用于下一轮任务，强度调整可用于尚未开始的步骤。已有成员默认沿用原有权限行为。
 
 ## 场景记忆与上下文
 
@@ -75,6 +89,21 @@ Codex 在资料读取和审查阶段启动 `read-only` 线程。DSH 原生成员
 
 运行时文件位于 `~/.dsh/codex-chat/`。
 
+### DSH 会话与插件会话的关系
+
+原生 DSH 会话与插件需求使用同一个会话编号建立关联，一个场景可以关联多个会话。DSH 主聊天读取宿主的消息与事件日志，插件聊天读取自身的协作记录。场景、成员、角色记忆和上下文由插件管理。
+
+| 内容 | 默认位置 |
+| --- | --- |
+| DSH 原生会话日志 | `~/.dsh/sessions/<工作区编码>/<会话编号>/session.v4.jsonl.zstd` |
+| DSH 会话索引缓存 | `~/.dsh/storages/session_projcache/sessions/` |
+| 插件场景、会话绑定与协作资料 | `~/.dsh/codex-chat/scenarios.sqlite` |
+| 插件上传 | `<工作区>/.dsh-codex-uploads/` |
+
+开发 profile 的 Junction 负责加载源码，运行数据按上述用户目录与工作区路径保存。迁移源码后，需要另外迁移原生会话、插件数据库、附件与引用的项目和技能文件，并映射新机器的工作目录。当前采用手工迁移，统一导出导入及跨系统路径映射待实现。
+
+### 插件数据
+
 | 文件 | 用途 |
 | --- | --- |
 | `scenarios.sqlite` | 场景、成员配置、任务、消息、事件、记忆修订与上下文快照 |
@@ -95,6 +124,9 @@ Codex 在资料读取和审查阶段启动 `read-only` 线程。DSH 原生成员
 | --- | --- | --- |
 | POST | `/bootstrap` | 通过 Session 或场景编号恢复工作区 |
 | POST | `/scenarios/:id/sessions` | 创建 DSH 需求会话并绑定场景，使用 requestId 去重 |
+| DELETE | `/scenarios/:id/sessions/:sessionId` | 携带场景 revision 解除会话绑定 |
+| POST | `/scenarios/:id/sessions/:sessionId/open` | 核对绑定、恢复原生会话编号并补齐匹配的工作区登记 |
+| DELETE | `/scenarios/:id` | 携带 revision 删除场景及插件内记录，解除全部绑定 |
 | GET | `/directories?path=...` | 浏览工作区文件夹，供浏览器入口选择目录 |
 | GET | `/scenarios` | 场景与活动 Session 列表 |
 | GET / PATCH | `/scenarios/:id` | 读取场景、历史与任务，带版本保存配置 |
@@ -128,7 +160,7 @@ Codex 在资料读取和审查阶段启动 `read-only` 线程。DSH 原生成员
 - 图片通过 `localImage` 传入 Codex。
 - Codex 用户输入请求通过 `item/tool/requestUserInput` 接入主聊天中的补充表单。
 - DeepSeek 的每成员路由通过 `startActivation.agentOptions` 的 `provider/model/reasoningEffort` 设置。
-- 宿主硬依赖为 `commands/workingDirectory/webServer/subagents/agents`。`llm/skills/loader/sessionController` 通过可选注入读取。
+- 宿主硬依赖为 `commands/workingDirectory/webServer/subagents/agents`。`llm/skills/loader/sessionController/workspaceController/workspaceRegistry` 通过可选注入读取。
 - 客户端硬依赖为 `slots/locale/sidebarRightTabs/sidebarRight`。
 - 标签类型保留 `codex-chat`，`sidebar.right.pane.tab` 的注册键保留 `@local/dsh-codex-chat`。指南卡片由 `sidebarRightTabs.register` 提供。
 - 全屏操作使用 `sidebarRight.commandTarget` 和 `sidebarRight.toggleFullscreen`。
@@ -159,7 +191,7 @@ Codex 在资料读取和审查阶段启动 `read-only` 线程。DSH 原生成员
 
 Node 运行时需要支持 `node:sqlite`。当前桌面宿主为 Node 24，已核对该能力。
 
-`DSH_CODEX_BIN`、`DSH_CODEX_NODE`、`DSH_CODEX_MODEL` 保留原有用途。Codex 握手上限为 30 秒，每个阶段上限为 15 分钟。
+`DSH_CODEX_BIN`、`DSH_CODEX_NODE`、`DSH_CODEX_MODEL` 保留原有用途。Codex 握手上限为 30 秒。协作阶段持续运行到引擎结束、连接故障或用户停止，执行中暂停空闲回收计时。接续任务携带原分工、已完成成员产物与中断状态，先核验实际文件再推进剩余工作。旧版独立聊天入口保留原有单轮时限。
 
 诊断日志位于 `%TEMP%/dsh-codex-chat.log`。运行时数据和日志均位于源码目录之外。
 

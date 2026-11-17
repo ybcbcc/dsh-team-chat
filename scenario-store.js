@@ -98,13 +98,65 @@ export class ScenarioStore {
   }
 
   bindSession(scenarioId, sessionId, title = '') {
-    sessionId = canonicalSessionId(sessionId)
-    if (!sessionId || !this.scenario(scenarioId)) throw new Error('请选择场景和会话')
-    this.db.prepare(`INSERT INTO scenario_sessions VALUES (?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET scenario_id = excluded.scenario_id,
-      title = CASE WHEN excluded.title = '' THEN scenario_sessions.title ELSE excluded.title END`)
-      .run(sessionId, scenarioId, title, now())
-    return this.scenario(scenarioId)
+    return this.transaction(() => {
+      sessionId = canonicalSessionId(sessionId)
+      const target = this.scenario(scenarioId)
+      if (!sessionId || !target) throw new Error('请选择场景和会话')
+      const previous = this.sessionScene(sessionId)
+      const binding = previous?.sessions.find(session => session.id === sessionId)
+      if (previous?.id === target.id && (!title || binding.title === title)) return target
+      if (previous && previous.id !== target.id) this.assertNoActiveRun(previous.id, sessionId)
+      this.db.prepare(`INSERT INTO scenario_sessions VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET scenario_id = excluded.scenario_id,
+        title = CASE WHEN excluded.title = '' THEN scenario_sessions.title ELSE excluded.title END`)
+        .run(sessionId, target.id, title, now())
+      if (previous && previous.id !== target.id) {
+        const remaining = this.scenario(previous.id)
+        this.saveScenario({ ...remaining, dshSessionId: remaining.dshSessionId === sessionId
+          ? remaining.sessions.at(-1)?.id || '' : remaining.dshSessionId })
+      }
+      return this.saveScenario({ ...this.scenario(target.id), dshSessionId: target.dshSessionId || sessionId })
+    })
+  }
+
+  assertNoActiveRun(scenarioId, sessionId = '') {
+    const active = this.interruptedRuns().some(run => run.scenarioId === scenarioId
+      && (!sessionId || canonicalSessionId(run.sessionId || run.dshSessionId || run.scene?.dshSessionId) === sessionId))
+    if (active) {
+      const error = new Error('相关会话还有任务正在执行，请先停止任务再管理绑定或删除场景')
+      error.status = 409
+      throw error
+    }
+  }
+
+  unbindSession(scenarioId, sessionId, expectedRevision) {
+    return this.transaction(() => {
+      const scene = this.scenario(scenarioId)
+      sessionId = canonicalSessionId(sessionId)
+      if (!scene) throw new Error('场景不存在')
+      if (!scene.sessions.some(session => session.id === sessionId)) return scene
+      if (scene.revision !== expectedRevision) throw conflict()
+      this.assertNoActiveRun(scene.id, sessionId)
+      this.db.prepare('DELETE FROM scenario_sessions WHERE scenario_id = ? AND session_id = ?').run(scene.id, sessionId)
+      const remaining = this.scenario(scene.id)
+      return this.saveScenario({ ...remaining, dshSessionId: remaining.dshSessionId === sessionId
+        ? remaining.sessions.at(-1)?.id || '' : remaining.dshSessionId })
+    })
+  }
+
+  deleteScenario(scenarioId, expectedRevision) {
+    return this.transaction(() => {
+      const scene = this.scenario(scenarioId)
+      if (!scene) throw new Error('场景不存在')
+      if (scene.revision !== expectedRevision) throw conflict()
+      this.assertNoActiveRun(scene.id)
+      this.db.prepare('DELETE FROM memory_revisions WHERE id IN (SELECT id FROM memories WHERE scenario_id = ?)').run(scene.id)
+      for (const table of ['contexts', 'messages', 'events', 'runs', 'memories', 'session_requests', 'scenario_aliases', 'scenario_sessions']) {
+        this.db.prepare(`DELETE FROM ${table} WHERE scenario_id = ?`).run(scene.id)
+      }
+      this.db.prepare('DELETE FROM scenarios WHERE id = ?').run(scene.id)
+      return scene
+    })
   }
 
   sessionRequest(id) {

@@ -8,7 +8,7 @@ const OUTPUT_CONTRACT = `只输出一个 JSON 对象。所有面向用户的内�
 memoryCandidates 可包含 {title,content,kind,evidence,audience:"scene"|"role"}。项目事实与共同约束使用 scene，当前角色的工作方法与经验使用 role。`
 
 function executionAgent(agent, variantId = '') {
-  if (!variantId) return { ...agent, baseName: agent.name, profileName: '默认强度' }
+  if (!variantId) return { ...agent, baseName: agent.name, profileName: '成员配置' }
   const variant = (agent.variants || []).find(item => item.id === variantId)
   if (!variant) throw new Error('这个扩展成员已不存在，请重新选择')
   return { ...agent, baseName: agent.name, variantId: variant.id, profileName: variant.name,
@@ -110,8 +110,11 @@ export class RunCoordinator {
   }
 
   resumeContext(run) {
-    return JSON.stringify({ request: run.text, state: run.state, tasks: run.tasks, result: run.finalResult,
-      instruction: '接续前先核对已完成操作与实际状态，再推进尚未完成的工作。' })
+    const completed = new Set(run.tasks.filter(task => task.state === 'completed').map(task => task.messageId))
+    const outputs = this.store.runMessages(run.id).filter(message => completed.has(message.id))
+      .map(message => ({ agentId: message.agentId, stage: message.stage, messageId: message.id, result: message.structured || message.text }))
+    return JSON.stringify({ request: run.text, state: run.state, tasks: run.tasks, delegations: run.delegations || [], completedOutputs: outputs, result: run.finalResult,
+      instruction: '接续前核验已完成产物、文件和实际状态，复用有效成果。从失败或依赖受阻的任务继续分工，写入前核对上次已产生的部分修改。' })
   }
 
   async perform(run, signal) {
@@ -123,10 +126,10 @@ export class RunCoordinator {
       run.error = error.message
       const cancelled = signal.aborted
       for (const task of run.tasks) {
-        if (['working', 'pending'].includes(task.state)) task.state = cancelled ? 'cancelled' : 'failed'
+        if (['working', 'pending'].includes(task.state)) task.state = cancelled ? 'cancelled' : task.state === 'pending' ? 'blocked' : 'failed'
       }
       for (const task of run.delegations || []) {
-        if (['working', 'pending'].includes(task.state)) task.state = cancelled ? 'cancelled' : 'failed'
+        if (['working', 'pending'].includes(task.state)) task.state = cancelled ? 'cancelled' : task.state === 'pending' ? 'blocked' : 'failed'
       }
       this.finish(run, cancelled ? 'cancelled' : 'failed', cancelled ? '任务已停止。已完成操作与成员记录可以在右侧查看。' : `本轮任务中断。${error.message}`)
     } finally {
@@ -142,6 +145,7 @@ export class RunCoordinator {
   async call(run, agent, stage, instruction, signal, { readOnly = true, handoffs = [], variantId } = {}) {
     signal.throwIfAborted()
     agent = executionAgent(agent, variantId ?? run.profileOverrides?.[agent.id] ?? '')
+    readOnly = readOnly || agent.permission === 'read-only'
     const scene = run.scene
     const operationId = randomUUID()
     const selected = relevantMemories(this.store.memories(scene.id), run.text, 2400, agent.roleId || agent.id)
@@ -165,7 +169,7 @@ export class RunCoordinator {
     const context = this.store.addContext({ scenarioId: scene.id, runId: run.id, agentId: agent.id, operationId, stage,
       engine: agent.engine, kind: 'stage', status: 'working', variantId: agent.variantId,
       agentProvider: agent.agentProvider || '', permissionSource: agent.engine === 'agent' ? 'provider-config' : agent.engine === 'codex' ? 'sandbox' : 'tool-filter',
-      effectiveConfig: { model: agent.model, effort: agent.effort, profileName: agent.profileName },
+      effectiveConfig: { model: agent.model, effort: agent.effort, profileName: agent.profileName, permission: agent.permission || 'default' },
       items: items.map(item => ({ ...item, estimatedTokens: estimateTokens(item.content) })), estimatedTokens: estimateTokens(prompt),
       sourceCoverage: '插件组装的完整请求材料。引擎额外注入的内容按运行时事件记录。', readOnly })
     this.emit(run, 'context.created', { agentId: agent.id, contextId: context.id, stage })
@@ -194,7 +198,7 @@ export class RunCoordinator {
         if (payload.usage) this.store.updateContext(context.id, { reportedUsage: payload.usage })
         if (payload.contextWindow) this.store.updateContext(context.id, { contextWindow: payload.contextWindow })
         if (payload.threadId) this.store.updateContext(context.id, { threadId: payload.threadId,
-          effectiveConfig: { model: payload.model, provider: payload.provider, effort: payload.effort, readOnly } })
+          effectiveConfig: { model: payload.model, provider: payload.provider, effort: payload.effort, permission: payload.permission || agent.permission || 'default', readOnly } })
       },
     })
     try {
@@ -498,7 +502,7 @@ export class RunCoordinator {
         error ? reject(error) : resolve(answer)
       }
       this.questions.set(id, { runId: run.id, resolve: answer => settle(answer), reject: error => settle(undefined, error) })
-      run.questions = [...(run.questions || []), { id, agentId: agent.id, agentName: agent.name, questions: params.questions || [] }]
+      run.questions = [...(run.questions || []), { id, agentId: agent.id, agentName: agent.name, questions: params.questions || [], kind: params.kind || 'question', details: params.details || '' }]
       signal.addEventListener('abort', onAbort, { once: true })
       if (signal.aborted) { onAbort(); return }
       this.update(run, 'waiting_user')
@@ -514,6 +518,9 @@ export class RunCoordinator {
     if (!answers || typeof answers !== 'object' || !request?.questions.every(item =>
       Array.isArray(answers[item.id]?.answers) && answers[item.id].answers.some(value => typeof value === 'string' && value.trim()))) {
       throw new Error('请填写每个问题的回答')
+    }
+    if (request.kind === 'approval' && !request.questions.every(item => ['允许本次', '拒绝'].includes(answers[item.id]?.answers?.[0]))) {
+      throw new Error('请选择允许本次或拒绝')
     }
     question.resolve({ answers })
   }

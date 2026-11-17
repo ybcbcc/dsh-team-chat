@@ -96,7 +96,7 @@ function nodeExecutable() {
 /**
  * Locate Codex, in order of preference. The Host process may run without
  * `DSH_PROFILE_DIR`, so the profile is also searched under the usual home
- * location, and the installed Codex app's own CLI is the last resort.
+ * location. System and desktop-app CLIs take precedence over the profile copy.
  * @param override - explicit executable from the environment.
  * @returns `{ argv, env }` for the app-server child.
  */
@@ -106,6 +106,32 @@ function resolveLauncher(override) {
     return { argv: [override, 'app-server', '--stdio'], env: process.env, source: `env:${override}` }
   }
   const node = nodeExecutable()
+  const systemCodex = executableOnPath('codex')
+  if (systemCodex) {
+    const target = realpathSync(systemCodex)
+    const wrapper = ['.js', '.mjs', '.cjs'].includes(extname(target))
+    log(`launcher system cli ${target}`)
+    return { argv: wrapper ? [node.path, target, 'app-server', '--stdio'] : [systemCodex, 'app-server', '--stdio'],
+      env: wrapper && node.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
+      source: `path:${target}` }
+  }
+  const local = process.env.LOCALAPPDATA
+  if (typeof local === 'string' && local !== '') {
+    const binRoot = join(local, 'OpenAI', 'Codex', 'bin')
+    if (existsSync(binRoot)) {
+      try {
+        const binaries = readdirSync(binRoot).map(entry => join(binRoot, entry, 'codex.exe'))
+          .filter(exe => existsSync(exe)).sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)
+        if (binaries.length) {
+          const exe = binaries[0]
+          log(`launcher app cli ${exe}`)
+          return { argv: [exe, 'app-server', '--stdio'], env: process.env, source: `app:${exe}` }
+        }
+      } catch (error) {
+        log(`launcher app cli failed: ${messageOf(error)}`)
+      }
+    }
+  }
   const profiles = []
   if (typeof process.env.DSH_PROFILE_DIR === 'string' && process.env.DSH_PROFILE_DIR !== '') profiles.push(process.env.DSH_PROFILE_DIR)
   if (typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== '') profiles.push(join(process.env.DSH_HOME, 'profiles', 'desktop'))
@@ -128,30 +154,6 @@ function resolveLauncher(override) {
     } catch (error) {
       log(`launcher npm wrapper failed: ${messageOf(error)}`)
     }
-  }
-  const local = process.env.LOCALAPPDATA
-  if (typeof local === 'string' && local !== '') {
-    const binRoot = join(local, 'OpenAI', 'Codex', 'bin')
-    if (existsSync(binRoot)) {
-      try {
-        for (const entry of readdirSync(binRoot)) {
-          const exe = join(binRoot, entry, 'codex.exe')
-          if (!existsSync(exe)) continue
-          log(`launcher app cli ${exe}`)
-          return { argv: [exe, 'app-server', '--stdio'], env: process.env, source: `app:${exe}` }
-        }
-      } catch (error) {
-        log(`launcher app cli failed: ${messageOf(error)}`)
-      }
-    }
-  }
-  const systemCodex = executableOnPath('codex')
-  if (systemCodex) {
-    const target = realpathSync(systemCodex)
-    const wrapper = ['.js', '.mjs', '.cjs'].includes(extname(target))
-    return { argv: wrapper ? [node.path, target, 'app-server', '--stdio'] : [systemCodex, 'app-server', '--stdio'],
-      env: wrapper && node.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
-      source: `path:${target}` }
   }
   throw new Error('找不到 Codex（已查 profile 内的 @openai/codex 与已安装的 Codex 应用）；可设置环境变量 DSH_CODEX_BIN 指向 codex 可执行文件')
 }
@@ -369,11 +371,24 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
     if (collect !== undefined) collect.reject(new Error(closeReason))
     collect = undefined
   })
+  const requestApproval = async message => {
+    if (options.readOnly || options.permission === 'read-only') return false
+    if (!hooks?.onQuestion) return false
+    const response = await hooks.onQuestion({ kind: 'approval', details: JSON.stringify({ operation: message.method, ...message.params }, null, 2),
+      questions: [{ id: 'approval', header: '操作审批', question: '是否允许本次操作？', options: [{ label: '允许本次', description: '仅批准这一次申请' }, { label: '拒绝', description: '拒绝这一次申请' }] }] })
+    return response?.answers?.approval?.answers?.[0] === '允许本次'
+  }
   wire.setRequestHandler(async (message) => {
     if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
+      if (options.readOnly || options.permission === 'read-only') return { decision: 'decline' }
+      if (options.permission === 'approve') return { decision: await requestApproval(message) ? 'accept' : 'decline' }
       return { decision: unattendedDecision(message.params) }
     }
-    if (message.method === 'item/permissions/requestApproval') return { permissions: {}, scope: 'turn' }
+    if (message.method === 'item/permissions/requestApproval') {
+      const allowed = !options.readOnly && options.permission !== 'read-only'
+        && (options.permission === 'full' || (options.permission === 'approve' && await requestApproval(message)))
+      return { permissions: allowed ? message.params?.permissions || {} : {}, scope: 'turn' }
+    }
     if (message.method === 'item/tool/requestUserInput') {
       return hooks?.onQuestion ? hooks.onQuestion(message.params) : { answers: {} }
     }
@@ -408,10 +423,10 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
     idleTimer = setTimeout(() => { close() }, IDLE_MS)
     idleTimer.unref?.()
   }
-  function close() {
+  function close(reason = 'Codex 会话已关闭') {
     if (closed) return
     closed = true
-    if (collect !== undefined) collect.reject(new Error('Codex 会话已关闭'))
+    if (collect !== undefined) collect.reject(new Error(reason))
     collect = undefined
     if (idleTimer !== undefined) clearTimeout(idleTimer)
     try { child.kill() } catch { /* already gone */ }
@@ -436,9 +451,9 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
       ephemeral: true,
       ...(model === undefined ? {} : { model }),
       ...(Object.keys(config).length === 0 ? {} : { config }),
-      approvalPolicy: 'on-request',
-      approvalsReviewer: 'auto_review',
-      sandbox: options.readOnly === true ? 'read-only' : 'workspace-write',
+      approvalPolicy: options.readOnly || options.permission === 'read-only' || options.permission === 'full' ? 'never' : 'on-request',
+      approvalsReviewer: options.permission === 'approve' ? 'user' : 'auto_review',
+      sandbox: options.readOnly || options.permission === 'read-only' ? 'read-only' : options.permission === 'full' ? 'danger-full-access' : 'workspace-write',
     }, signal), START_TIMEOUT_MS, 'thread/start')
     const thread = response === undefined || response === null ? undefined : response.thread
     if (thread === undefined || thread === null || typeof thread.id !== 'string') {
@@ -453,6 +468,7 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
   }
   async function runTurn(text, signal, attachments) {
     if (closed) throw new Error(closeReason === '' ? 'Codex 会话已关闭' : closeReason)
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
     lastFinal = ''
     lastPartial = ''
     lastUnphased = ''
@@ -463,10 +479,11 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
       else input.push({ type: 'mention', name: typeof attachment.name === 'string' ? attachment.name : 'file', path: attachment.path })
     }
     const completion = new Promise((resolvePromise, rejectPromise) => { collect = { resolve: resolvePromise, reject: rejectPromise } })
-    const deadline = new Promise((_resolvePromise, rejectPromise) => {
+    const timeoutMs = options.turnTimeoutMs ?? TURN_TIMEOUT_MS
+    const deadline = timeoutMs === 0 ? completion : new Promise((_resolvePromise, rejectPromise) => {
       const timer = setTimeout(
-        () => { rejectPromise(new Error(`这一轮超过 ${Math.round(TURN_TIMEOUT_MS / 60000)} 分钟没有完成`)) },
-        TURN_TIMEOUT_MS,
+        () => { rejectPromise(new Error(`这一轮超过 ${Math.round(timeoutMs / 60000)} 分钟没有完成`)) },
+        timeoutMs,
       )
       timer.unref?.()
       completion.then(() => { clearTimeout(timer) }, () => { clearTimeout(timer) })
@@ -477,7 +494,6 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
       const status = turn === undefined || turn === null ? undefined : turn.status
       const answer = lastFinal !== '' ? lastFinal : lastPartial !== '' ? lastPartial : lastUnphased
       channel.turnCount += 1
-      resetIdle()
       return {
         answer: answer === '' ? `（这一轮没有文本回答，状态 ${String(status)}）` : answer,
         status: status === 'completed' ? 'completed' : String(status),
@@ -487,6 +503,7 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
       throw error
     } finally {
       collect = undefined
+      if (!closed) resetIdle()
     }
   }
   channel.send = (text, signal, attachments) => {
@@ -743,9 +760,10 @@ export function apply(ctx) {
    * Ask the app-server for its model catalog.
    * @returns the model rows, each with `id`, `displayName`, and supported efforts.
    */
-  async function availableModels() {
-    if (modelCache !== undefined && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.value
-    const channel = createChannel(resolveLauncher(explicitBin), webCwd(), undefined, undefined, undefined)
+  async function availableModels({ refresh = false } = {}) {
+    const launcher = resolveLauncher(explicitBin)
+    if (!refresh && modelCache?.source === launcher.source && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.value
+    const channel = createChannel(launcher, webCwd(), undefined, undefined, undefined)
     try {
       await channel.initialize()
       const result = await withTimeout(channel.request('model/list', {}), START_TIMEOUT_MS, 'model/list')
@@ -760,7 +778,7 @@ export function apply(ctx) {
             ? row.supportedReasoningEfforts.map(effort => effort !== null && typeof effort === 'object' ? effort.reasoningEffort : undefined).filter(effort => typeof effort === 'string')
             : [],
         }))
-      modelCache = { at: Date.now(), value }
+      modelCache = { at: Date.now(), source: launcher.source, value }
       return value
     } finally {
       channel.close()

@@ -3,9 +3,11 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'n
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { join, relative, isAbsolute, dirname } from 'node:path'
-import { ScenarioStore, canonicalSessionId, conflict } from './scenario-store.js'
+import { ScenarioStore, canonicalSessionId, conflict, MEMORY_KINDS, redactMemoryText } from './scenario-store.js'
 import { RunCoordinator } from './coordinator.js'
 import { contextInsights, createRuntimeCapture } from './context-insights.js'
+import { createMemoryCompiler } from './memory-compiler.js'
+import { matchMember, normalizeRoutingPolicy, routeMember, taskCapability } from './model-routing.js'
 
 const READ_TOOLS = new Set([
   'read', 'read_image', 'read_file', 'read_files', 'glob', 'grep', 'ls', 'list_files', 'list_directory',
@@ -13,8 +15,10 @@ const READ_TOOLS = new Set([
   'search_sessions', 'read_session', 'get_session', 'list_sessions', 'get_working_directory',
   'memory_list', 'memory_get', 'memory_write',
 ])
-const MEMORY_KINDS = new Set(['fact', 'decision', 'preference', 'constraint', 'blocker', 'learning', 'note'])
 const MEMORY_STATES = new Set(['candidate', 'confirmed', 'conflict', 'expired', 'archived', 'deleted'])
+const COLLABORATION_EVENTS = ['message.added', 'handoff.queued', 'handoff.sent', 'owner.inbox.queued', 'owner.inbox.processing',
+  'owner.inbox.processed', 'owner.decision', 'agent.started', 'agent.completed', 'agent.failed',
+  'thread.started', 'user.question', 'user.answer', 'user.answered', 'run.interrupted', 'run.finished']
 
 function fail(message, status = 400) {
   const error = new Error(message)
@@ -32,6 +36,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   store.migrate(home)
   store.normalizeBindings()
   store.migrateScenarioSessions()
+  store.migrateMemoryHistory()
   const listeners = new Map()
   const children = new Map()
   const channels = new Set()
@@ -39,6 +44,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   const sockets = new Set()
   const optional = {}
   const sessionCreations = new Map()
+  const runCatalogs = new WeakMap()
   const backendNames = new Set(['spawn', 'fork', 'codex', 'claude-code', 'claude', 'acp', 'dsh-sdk'])
   let closed = false
   for (const name of ['llm', 'skills', 'loader', 'sessionController', 'workspaceController', 'workspaceRegistry']) {
@@ -51,7 +57,8 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   const publish = event => {
     for (const send of listeners.get(event.scenarioId) || []) send(event)
   }
-  const coordinator = new RunCoordinator({ store, publish, runAgent, loadSkills,
+  const memoryCompiler = createMemoryCompiler({ store, publish, complete: completeMemory })
+  const coordinator = new RunCoordinator({ store, publish, runAgent, loadSkills, prepareTeam, routeTask, memoryCompiler,
     closeAgents: async () => {
       for (const channel of channels) channel.close()
       const disposing = [...children.values()].map(child => child.activation?.dispose()).filter(Boolean)
@@ -63,6 +70,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
 
   ctx.on('tools/pre-execute', async (execution, next) => {
     const child = children.get(String(execution.agent?.session?.id))
+    if (child?.memoryOnly) return { kind: 'deny', reason: '记忆整理只使用宿主交付的证据。' }
     if (child?.readOnly && (!READ_TOOLS.has(execution.name) || (child.agent.permission === 'read-only' && execution.name === 'memory_write'))) {
       return { kind: 'deny', reason: '当前协作阶段进行资料读取与审查，修改与执行由团队的执行阶段处理。' }
     }
@@ -77,15 +85,16 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   })
   ctx.on('agent/created', ({ agent }) => {
     const child = children.get(String(agent.session.id))
-    if (!child) return
+    if (!child || child.memoryOnly) return
     agent.ctx.inject(['tools'], inner => {
       const output = { schema: { type: 'object', additionalProperties: false, required: ['text'], properties: { text: { type: 'string' } } },
         render: (_args, value) => [{ type: 'text', text: value.text }] }
       const register = (name, description, properties, required, execute) => inner.tools.register({ name, description,
         parameters: { type: 'object', additionalProperties: false, properties, required }, output,
         async execute(args) { return { text: JSON.stringify(execute(args)) } } })
-      const visibleMemory = memory => memory.enabled && ['confirmed', 'candidate', 'conflict'].includes(memory.status)
+      const inScope = memory => memory.enabled
         && (memory.audience !== 'role' || memory.roleId === (child.agent.roleId || child.agent.id))
+      const visibleMemory = memory => inScope(memory) && memory.status === 'confirmed'
       register('memory_list', '检索场景共享记忆与当前角色专属记忆，返回内容、状态及来源。',
         { query: { type: 'string' } }, [], args => store.memories(child.run.scenarioId)
           .filter(memory => visibleMemory(memory)
@@ -99,7 +108,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         { id: { type: 'string' }, revision: { type: 'integer' }, title: { type: 'string' }, content: { type: 'string' },
           detail: { type: 'string' }, kind: { type: 'string', enum: [...MEMORY_KINDS] }, audience: { type: 'string', enum: ['scene', 'role'] } }, ['title'], args => {
           const prior = args.id ? store.memory(args.id) : undefined
-          if (args.id && (!prior || prior.scenarioId !== child.run.scenarioId || !visibleMemory(prior))) fail('当前角色无法更新这条记忆')
+          if (args.id && (!prior || prior.scenarioId !== child.run.scenarioId || !inScope(prior))) fail('当前角色无法更新这条记忆')
           if (prior && ['deleted', 'archived', 'expired'].includes(prior.status)) fail('这条记忆已停用，请在记忆页恢复后更新')
           const data = memoryInput({ ...args, content: args.content || args.detail || prior?.content })
           if (prior?.status === 'candidate' && !Number.isInteger(args.revision)) fail('更新记忆需要携带当前 revision')
@@ -109,7 +118,8 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
             status: prior && prior.status !== 'candidate' ? 'conflict' : 'candidate',
             conflictsWith: prior && prior.status !== 'candidate' ? [prior.id] : [],
             sources: [...(prior?.sources || []), { type: 'agent', agentId: child.agent.id, runId: child.run.id }] },
-          prior?.status === 'candidate' ? args.revision : undefined)
+          prior?.status === 'candidate' ? args.revision : undefined,
+          { trigger: 'agent-tool', sessionId: child.run.sessionId, runId: child.run.id, actor: child.agent.name })
           publish(store.event(child.run.scenarioId, child.run.id, 'memory.changed', { memory }))
           return memory
         })
@@ -125,7 +135,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     const child = children.get(String(session.id))
     if (!child) return
     try {
-      child.capture({ ...event, threadId: String(session.id) })
+      child.capture?.({ ...event, threadId: String(session.id) })
     } catch (error) { log(`workbench session event: ${error.message}`) }
   })
 
@@ -170,6 +180,105 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       skills.push({ name: skill.name, content: skill.content, path: skill.path })
     }
     return skills
+  }
+
+  function routingCatalog(run) {
+    let pending = runCatalogs.get(run)
+    if (!pending) {
+      pending = catalog(run.scene, false, false)
+      runCatalogs.set(run, pending)
+      pending.catch(() => { runCatalogs.delete(run) })
+    }
+    return pending
+  }
+
+  async function routeTask(run, agent, task, signal) {
+    signal.throwIfAborted()
+    if (task.access === 'write' && agent.permission === 'read-only') {
+      fail(`成员 ${agent.name} 是只读成员，请将修改步骤分给有写入权限的成员`)
+    }
+    if (run.scene.teamStrategy !== 'auto') return agent
+    const requiresImage = run.attachments?.some(item => item.kind === 'image')
+    return routeMember(agent, { ...task, requiresImage }, await routingCatalog(run), run.scene.routingPolicy)
+  }
+
+  async function prepareTeam(run, requested, signal) {
+    signal.throwIfAborted()
+    const scene = sceneFor(run.scenarioId)
+    if (run.scene.teamStrategy !== 'auto') return { agents: run.agents, ownerId: run.ownerId, scene: run.scene }
+    const requiresImage = run.attachments?.some(item => item.kind === 'image')
+    const aliases = Object.create(null)
+    const known = [...scene.agents]
+    const owner = known.find(agent => agent.id === (run.ownerId || scene.ownerId))
+      || known.find(agent => agent.capability === 'owner')
+      || known.find(agent => agent.engine === 'codex')
+      || known[0]
+    if (!owner) fail('场景里没有可作为 Owner 的模型接入')
+    const agents = [...run.agents]
+    const add = agent => {
+      if (!agents.some(item => item.id === agent.id)) agents.push(agent)
+    }
+    add(owner)
+    const added = []
+    for (const member of requested || []) {
+      if (!member || typeof member.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(member.id)) fail('Owner 给出的成员标识无效')
+      const existing = matchMember(known, member, owner.id)
+      if (existing) {
+        aliases[member.id] = existing.id
+        add(existing)
+        continue
+      }
+      if (added.length === 2) fail('每次分工最多补充两位成员，请优先复用场景成员')
+      if (known.length >= 64) fail('场景成员数已达到存储上限，请复用已配置的成员')
+      const name = String(member.name || '').trim().slice(0, 80)
+      const role = String(member.role || '').trim().slice(0, 1000)
+      const capability = taskCapability(member.capability || name || role)
+      if (!name || !role || !capability || capability === 'owner') fail('新成员需要名称、具体职责和可识别的能力')
+      const id = `agent-${randomUUID()}`
+      const models = await routingCatalog(run)
+      const policy = normalizeRoutingPolicy(scene.routingPolicy)
+      const preferredDsh = (models.dsh || []).find(model =>
+        (model.id === policy.deepseekModel || (policy.deepseekModel === '1017' && /deepseek/i.test(model.label || model.id)
+          && /1017/.test(`${model.id} ${model.label}`))) && (!policy.deepseekProvider || model.provider === policy.deepseekProvider))
+      const engine = capability === 'writing' && preferredDsh && run.dshSessionId && !requiresImage
+        ? 'dsh' : 'codex'
+      const candidate = { id, roleId: id, name, role, capability, engine, agentProvider: '', permission: 'default',
+        model: engine === 'dsh' ? preferredDsh.id : '', provider: engine === 'dsh' ? preferredDsh.provider : '',
+        effort: '', variants: [], skills: [], autoAdded: true }
+      const { routingReason, ...resolved } = routeMember(candidate, { capability, difficulty: 'medium', requiresImage }, models, scene.routingPolicy)
+      known.push(resolved)
+      added.push(resolved)
+      add(resolved)
+      aliases[member.id] = id
+    }
+    signal.throwIfAborted()
+    const updated = added.length || !scene.ownerId
+      ? store.transaction(() => {
+        const current = sceneFor(scene.id)
+        const byId = new Map(current.agents.map(agent => [agent.id, agent]))
+        for (const entry of added) {
+          const existing = matchMember([...byId.values()], entry, owner.id)
+          if (existing) {
+            for (const key of Object.keys(aliases)) if (aliases[key] === entry.id) aliases[key] = existing.id
+            const index = agents.findIndex(agent => agent.id === entry.id)
+            if (index !== -1) agents.splice(index, 1)
+            add(existing)
+          } else byId.set(entry.id, entry)
+        }
+        return store.saveScenario({ ...current, ownerId: current.ownerId || owner.id, agents: [...byId.values()] }, current.revision)
+      }) : scene
+    if (updated !== scene) publish(store.event(scene.id, run.id, 'scenario.updated', { scene: updated }))
+    if (owner.engine !== 'agent' && !requested.length) {
+      const routed = routeMember(owner, { capability: 'owner', difficulty: 'medium', requiresImage }, await routingCatalog(run), run.scene.routingPolicy)
+      agents[agents.findIndex(agent => agent.id === owner.id)] = routed
+    }
+    return { agents, ownerId: owner.id, scene: { ...run.scene, ownerId: owner.id, agents: updated.agents, revision: updated.revision }, aliases }
+  }
+
+  async function completeMemory({ run, agent, prompt, signal }) {
+    return runAgent({ run: { ...run, attachments: [] }, agent, stage: '整理场景记忆', prompt, signal,
+      readOnly: true, memoryOnly: true, onDelta() {}, onEvent() {},
+      onQuestion() { throw new Error('记忆整理不能请求审批或额外操作') } })
   }
 
   async function runAgent(request) {
@@ -233,7 +342,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       if (agentOptions.reasoningEffort && !efforts.includes(agentOptions.reasoningEffort)) fail('所选模型不支持这个思考强度，请重新选择')
     }
     const child = { ...request, activation: undefined }
-    child.capture = createRuntimeCapture({ store, request })
+    if (request.contextId) child.capture = createRuntimeCapture({ store, request })
     children.set(childId, child)
     let activation
     const stop = () => { if (activation) void activation.dispose().catch(error => log(`cancel child: ${error.message}`)) }
@@ -273,6 +382,59 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       sessionId, hasOlder: messages.length === 80, memoryCount: store.memories(id).filter(entry => entry.status !== 'deleted').length }
   }
 
+  function sceneSession(scene, sessionId, historical = false) {
+    const id = sessionId || scene.sessions.at(-1)?.id || `local-${scene.id}`
+    if (typeof id !== 'string') fail('会话编号格式错误')
+    if (id === `local-${scene.id}` || scene.sessions.some(session => session.id === id)) return id
+    if (historical && (store.runs(scene.id, 1, id).length || store.messages(scene.id, undefined, 1, id).length)) return id
+    fail('当前会话未关联这个场景', 404)
+  }
+
+  function collaboration(scene, search) {
+    const sessionId = sceneSession(scene, search.get('session'), true)
+    const runId = search.get('run') || ''
+    const member = search.get('member') || ''
+    if (member.length > 200) fail('成员编号格式错误')
+    if (runId) {
+      const run = store.run(runId)
+      if (!run || run.scenarioId !== scene.id || run.sessionId !== sessionId) fail('当前会话没有该任务', 404)
+    }
+    const after = Math.max(0, Number(search.get('after')) || 0)
+    const before = Math.min(Number.MAX_SAFE_INTEGER, Number(search.get('before')) || Number.MAX_SAFE_INTEGER)
+    const following = search.has('after')
+    const limit = 100
+    const types = member ? ['handoff.sent'] : COLLABORATION_EVENTS
+    const placeholders = types.map(() => '?').join(',')
+    const memberFilter = member ? `AND (json_extract(data, '$.fromAgentId') = ? OR json_extract(data, '$.toAgentId') = ?)` : ''
+    const rows = store.db.prepare(`SELECT seq, data FROM events WHERE scenario_id = ? AND seq > ? AND seq < ?
+      AND (? = '' OR run_id = ?) AND json_extract(data, '$.sessionId') = ?
+      AND type IN (${placeholders}) ${memberFilter} ORDER BY seq ${following ? 'ASC' : 'DESC'} LIMIT ?`)
+      .all(scene.id, after, before, runId, runId, sessionId, ...types, ...(member ? [member, member] : []), limit + 1)
+    const hasExtra = rows.length > limit
+    const page = rows.slice(0, limit)
+    if (!following) page.reverse()
+    const events = page.map(row => ({ ...JSON.parse(row.data), sequence: row.seq }))
+    const participants = new Map(scene.agents.map(agent => [agent.id, agent]))
+    for (const id of new Set(events.map(event => event.runId).filter(Boolean))) {
+      for (const agent of store.run(id)?.agents || []) {
+        if (!participants.has(agent.id)) participants.set(agent.id, agent)
+      }
+    }
+    return { events, participants: [...participants.values()].map(({ id, name, model, effort, engine }) => ({ id, name, model, effort, engine })),
+      hasOlder: !following && hasExtra, hasMore: following && hasExtra }
+  }
+
+  function memoryOrigin(scene, body, trigger = 'manual') {
+    const target = body.sessionId || body.runId || body.messageId
+      ? store.memorySource(scene.id, { sessionId: body.sessionId, runId: body.runId, messageId: body.messageId }) : undefined
+    if (body.sessionId && !target && !scene.sessions.some(session => session.id === body.sessionId) && body.sessionId !== `local-${scene.id}`) {
+      fail('记忆来源会话不属于当前场景')
+    }
+    if ((body.runId && !target?.runAvailable) || (body.messageId && !target?.messageAvailable)) fail('记忆来源无法在该场景中定位')
+    return { trigger, actor: 'user', sessionId: target?.sessionId || body.sessionId,
+      runId: target?.runId, messageId: target?.messageId, reason: String(body.reason || '').slice(0, 500) }
+  }
+
   function checkCwd(value) {
     const cwd = typeof value === 'string' && value.trim() ? value.trim() : defaultCwd()
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) fail('工作目录不存在')
@@ -293,12 +455,21 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       if (!['confidence', 'orchestration'].includes(patch.mode)) fail('协作模式无效')
       next.mode = patch.mode
     }
+    if (patch.teamStrategy !== undefined) {
+      if (!['auto', 'manual'].includes(patch.teamStrategy)) fail('团队组建方式无效')
+      next.teamStrategy = patch.teamStrategy
+    }
+    if (patch.inboxPolicy !== undefined) {
+      if (!['arrival', 'batch', 'stage'].includes(patch.inboxPolicy)) fail('回报处理方式无效')
+      next.inboxPolicy = patch.inboxPolicy
+    }
+    if (patch.routingPolicy !== undefined) next.routingPolicy = normalizeRoutingPolicy(patch.routingPolicy)
     if (patch.reviewRounds !== undefined) {
       if (!Number.isSafeInteger(patch.reviewRounds) || patch.reviewRounds < 0) fail('交叉验证轮数需为非负整数，0 表示持续验证')
       next.reviewRounds = patch.reviewRounds
     }
     if (patch.agents !== undefined) {
-      if (!Array.isArray(patch.agents) || patch.agents.length < 2 || patch.agents.length > 8) fail('团队需要 2 至 8 位成员')
+      if (!Array.isArray(patch.agents) || patch.agents.length < 1 || patch.agents.length > 64) fail('团队需要 1 至 64 位成员')
       const ids = new Set()
       next.agents = patch.agents.map(agent => {
         if (!agent || typeof agent.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(agent.id) || ids.has(agent.id)) fail('成员编号缺失或重复')
@@ -323,9 +494,12 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           variantIds.add(variant.id)
           if (!['simple', 'medium', 'hard'].includes(variant.difficulty)) fail('请选择扩展成员的任务难度')
         }
-        return { id: agent.id, roleId: scene.agents.find(item => item.id === agent.id)?.roleId || agent.id,
+        const prior = scene.agents.find(item => item.id === agent.id)
+        return { id: agent.id, roleId: prior?.roleId || agent.id,
           engine: agent.engine, agentProvider: agent.engine === 'agent' ? agent.agentProvider.trim().slice(0, 200) : '',
           name: agent.name.slice(0, 80), role: agent.role.slice(0, 4000),
+          capability: taskCapability(agent.capability ?? prior?.capability), routeLocked: (agent.routeLocked ?? prior?.routeLocked) === true,
+          autoAdded: prior?.autoAdded === true,
           roleSummary: String(agent.roleSummary || '').slice(0, 120), showRoleSummary: agent.showRoleSummary === true,
           model: String(agent.model || '').slice(0, 200), provider: String(agent.provider || '').slice(0, 200),
           effort: String(agent.effort || '').slice(0, 80), fast: agent.fast === true, permission: agent.permission || 'default',
@@ -349,7 +523,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     return next
   }
 
-  async function catalog(scene, refresh = false) {
+  async function catalog(scene, refresh = false, includeSkills = true) {
     const result = { codex: [], dsh: [], skills: [], agentBackends: registeredBackends(scene), errors: [],
       permissionModes: { codex: ['default', 'read-only', 'approve', 'full'], dsh: ['default', 'read-only', 'approve'], agent: ['default'] } }
     const jobs = [
@@ -368,7 +542,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         result.defaultDsh = result.dsh.find(model => model.id === parent?.options?.model && model.provider === parent?.options?.provider)
       })(),
       (async () => {
-        if (optional.skills) result.skills = await optional.skills.list({ cwd: scene.cwd })
+        if (includeSkills && optional.skills) result.skills = await optional.skills.list({ cwd: scene.cwd })
       })(),
     ]
     const outcomes = await Promise.allSettled(jobs)
@@ -409,14 +583,16 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     if (!binding) fail('这个会话尚未绑定当前场景', 409)
     const list = optional.sessionController?.list
       ? await optional.sessionController.list({}, AbortSignal.timeout(10000)) : undefined
-    const native = list?.items.find(session => canonicalSessionId(session.sessionId) === sessionId)
-    const nativeSessionId = native?.sessionId || String(findParent(sessionId)?.session.id || sessionId)
+    const native = list?.items?.find(session => canonicalSessionId(session.sessionId) === sessionId)
+    const parent = native ? undefined : findParent(sessionId)
+    const nativeSessionId = native?.sessionId || String(parent?.session.id || sessionId)
+    const nativeAvailable = native || parent ? true : Array.isArray(list?.items) ? false : undefined
     let workspace
     if (native?.cwd && existsSync(native.cwd) && checkCwd(native.cwd) === checkCwd(scene.cwd)) {
       workspace = await sceneWorkspace(scene)
       if (workspace) await workspace.attachSession(nativeSessionId)
     }
-    return { sessionId, nativeSessionId, sessionTitle: native?.title || binding.title || '',
+    return { sessionId, nativeSessionId, nativeAvailable, sessionTitle: native?.title || binding.title || '',
       workspace: workspace ? { id: workspace.id, title: workspace.title, path: workspace.path } : undefined }
   }
 
@@ -560,7 +736,17 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       if (route[0] === 'scenarios' && route[1]) {
         const scene = sceneFor(route[1])
         if (route.length === 2 && req.method === 'GET') {
-          writeJson(res, { ok: true, ...stateOf(scene.id, Number(url.searchParams.get('before')) || undefined, url.searchParams.get('session') || '') })
+          const anchor = url.searchParams.get('message')
+          const sessionId = url.searchParams.get('session') || ''
+          let before = Number(url.searchParams.get('before')) || undefined
+          if (anchor) {
+            const message = store.message(anchor)
+            if (!message || message.scenarioId !== scene.id || message.sessionId !== sceneSession(scene, sessionId, true)) {
+              fail('来源消息不在当前会话', 404)
+            }
+            before = message.seq + 25
+          }
+          writeJson(res, { ok: true, ...stateOf(scene.id, before, sessionId) })
           return true
         }
         if (route.length === 2 && req.method === 'PATCH') {
@@ -626,17 +812,20 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           sse(req, res, scene, after)
           return true
         }
+        if (route.length === 3 && route[2] === 'collaboration' && req.method === 'GET') {
+          writeJson(res, { ok: true, ...collaboration(scene, url.searchParams) })
+          return true
+        }
         if (route[2] === 'runs' && req.method === 'POST') {
           const body = await readJsonBody(req)
           if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 100000) fail('请输入任务，单条最多十万字')
-          if (typeof body.requestId !== 'string' || body.requestId.length > 100) fail('缺少本次发送标识')
+          if (typeof body.requestId !== 'string' || !body.requestId || body.requestId.length > 100) fail('缺少本次发送标识')
           scene.cwd = checkCwd(scene.cwd)
           const attachments = validAttachments(scene, body.attachments)
           if (scene.agents.some(agent => agent.engine !== 'codex') && attachments.some(file => file.kind === 'image')) {
             fail('DSH 模型和外部 Agent 的图片任务当前需要文字说明或提取内容')
           }
-          const sessionId = body.sessionId || scene.sessions.at(-1)?.id || `local-${scene.id}`
-          if (!sessionId.startsWith('local-') && store.sessionScene(sessionId)?.id !== scene.id) fail('当前会话尚未绑定这个场景')
+          const sessionId = sceneSession(scene, body.sessionId)
           const run = coordinator.start(scene, { ...body, sessionId,
             dshSessionId: sessionId.startsWith('local-') ? scene.dshSessionId || scene.sessions.at(-1)?.id : sessionId,
             text: body.text.trim(), attachments })
@@ -663,17 +852,46 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           } else writeJson(res, { ok: true, contexts: store.contexts(scene.id, url.searchParams.get('agent'), Number(url.searchParams.get('before')) || undefined) })
           return true
         }
-        if (route[2] === 'memories' && req.method === 'GET') {
+        if (route[2] === 'memories' && route[3] === 'history' && req.method === 'GET') {
+          const requested = url.searchParams.get('number')
+          const number = requested === null ? undefined : Number(requested)
+          if (requested !== null && (!/^\d+$/.test(requested) || !Number.isSafeInteger(number) || number < 1)) fail('请输入有效的记忆编号')
+          writeJson(res, { ok: true, ...store.memoryHistory(scene.id, { before: Number(url.searchParams.get('before')) || undefined,
+            limit: Number(url.searchParams.get('limit')) || undefined, number }) })
+          return true
+        }
+        if (route[2] === 'memories' && route[3] === 'source' && req.method === 'GET') {
+          const source = store.memorySource(scene.id, Object.fromEntries(url.searchParams))
+          if (!source) fail('没有可定位的来源记录', 404)
+          writeJson(res, { ok: true, source })
+          return true
+        }
+        if (route[2] === 'memories' && route[3] === 'consolidate' && req.method === 'POST') {
+          const body = await readJsonBody(req)
+          const sessionId = sceneSession(scene, body.sessionId, true)
+          const run = body.runId ? store.run(body.runId) : undefined
+          if (body.runId && (!run || run.scenarioId !== scene.id || run.sessionId !== sessionId)) fail('任务不属于当前会话')
+          writeJson(res, { ok: true, ...await memoryCompiler.consolidate({ scene, sessionId, runId: run?.id, trigger: 'manual-consolidation' }) })
+          return true
+        }
+        if (route.length === 3 && route[2] === 'memories' && req.method === 'GET') {
           const scope = url.searchParams.get('scope') === 'legacy' ? 'legacy' : 'scenario'
           writeJson(res, { ok: true, memories: store.memories(scene.id, scope) })
           return true
         }
-        if (route[2] === 'memories' && req.method === 'POST') {
+        if (route.length === 3 && route[2] === 'memories' && req.method === 'POST') {
           const body = await readJsonBody(req)
+          const origin = memoryOrigin(scene, body)
+          const message = origin.messageId ? store.message(origin.messageId) : undefined
+          const source = message ? {
+            type: 'message', sessionId: origin.sessionId, runId: origin.runId, messageId: origin.messageId,
+            sourceAt: message.at, stage: redactMemoryText(message.stage).slice(0, 120),
+            quote: redactMemoryText(message.text).trim().slice(0, 300),
+          } : { type: 'user-edit', at: new Date().toISOString() }
           const input = { ...memoryInput(body), scenarioId: scene.id, status: body.status || 'confirmed',
-            sources: [{ type: 'user-edit', at: new Date().toISOString() }] }
+            sources: [source] }
           validateMemoryRole(input, scene)
-          const memory = store.saveMemory(input)
+          const memory = store.saveMemory(input, undefined, origin)
           publish(store.event(scene.id, null, 'memory.changed', { memory }))
           writeJson(res, { ok: true, memory })
           return true
@@ -686,6 +904,9 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
         else if (route[2] === 'profiles' && req.method === 'PATCH') {
           const body = await readJsonBody(req)
           writeJson(res, { ok: true, run: coordinator.setProfile(run.id, body) })
+        } else if (route[2] === 'followups' && req.method === 'POST') {
+          const body = await readJsonBody(req)
+          writeJson(res, { ok: true, run: coordinator.followUp(run.id, body) })
         }
         else if (route[2] === 'cancel' && req.method === 'POST') writeJson(res, { ok: true, run: coordinator.cancel(run.id) })
         else if (route[2] === 'answers' && req.method === 'POST') {
@@ -707,7 +928,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           const scene = sceneFor(body.scenarioId)
           if (memory.scope !== 'legacy') fail('这条资料已经属于一个场景')
           const imported = store.saveMemory({ ...memoryInput(memory), scenarioId: scene.id, status: 'candidate', enabled: true,
-            sources: [...(memory.sources || []), { type: 'legacy-memory', id: memory.id }] })
+            sources: [...(memory.sources || []), { type: 'legacy-memory', id: memory.id }] }, undefined, memoryOrigin(scene, body, 'import'))
           publish(store.event(scene.id, null, 'memory.changed', { memory: imported }))
           writeJson(res, { ok: true, memory: imported })
           return true
@@ -717,8 +938,9 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           const body = await readJsonBody(req)
           if (!Number.isInteger(body.revision)) throw conflict()
           const patch = req.method === 'DELETE' ? { status: 'deleted', enabled: false } : memoryInput(body, true)
-          validateMemoryRole({ ...memory, ...patch }, sceneFor(memory.scenarioId))
-          const next = store.saveMemory({ ...memory, ...patch }, body.revision)
+          const scene = sceneFor(memory.scenarioId)
+          validateMemoryRole({ ...memory, ...patch }, scene)
+          const next = store.saveMemory({ ...memory, ...patch }, body.revision, memoryOrigin(scene, body))
           publish(store.event(memory.scenarioId, null, 'memory.changed', { memory: next }))
           writeJson(res, { ok: true, memory: next })
           return true
@@ -735,6 +957,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   return { handle, async dispose() {
     closed = true
     for (const close of sockets) close()
+    await memoryCompiler.dispose()
     await coordinator.dispose()
     store.close()
   } }

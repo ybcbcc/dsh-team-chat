@@ -12,6 +12,21 @@ export const canonicalSessionId = value => value ? `session-${String(value).repl
 
 const now = () => new Date().toISOString()
 const decode = row => row ? JSON.parse(row.data) : undefined
+const limitBetween = (value, fallback, maximum) => Number.isInteger(value) ? Math.max(1, Math.min(value, maximum)) : fallback
+const promptMemoryKinds = new Set(['constraint', 'preference'])
+export const MEMORY_KINDS = new Set(['fact', 'decision', 'preference', 'constraint', 'blocker', 'learning', 'note', 'reference', 'practice', 'pitfall'])
+
+export function redactMemoryText(value) {
+  return String(value || '')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[已隐藏私钥]')
+    .replace(/\b(authorization["']?\s*[:=]\s*["']?(?:bearer|basic)\s+)[^\s"',;]+/gi, '$1[已隐藏]')
+    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|password)["']?\s*[:=]\s*["']?)[^\s"',;\]}]{6,}/gi, '$1[已隐藏]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[已隐藏凭据]')
+}
+
+function messageExcerpt(text) {
+  return redactMemoryText(text).replace(/\s+/g, ' ').trim().slice(0, 160)
+}
 
 export class ScenarioStore {
   constructor(directory) {
@@ -44,6 +59,17 @@ export class ScenarioStore {
       CREATE TABLE IF NOT EXISTS memory_revisions (
         id TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(id, revision)
       );
+      CREATE TABLE IF NOT EXISTS memory_history (
+        scenario_id TEXT NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+        history_seq INTEGER NOT NULL, memory_id TEXT NOT NULL,
+        revision INTEGER NOT NULL, data TEXT NOT NULL,
+        PRIMARY KEY(scenario_id, history_seq), UNIQUE(memory_id, revision)
+      );
+      CREATE TABLE IF NOT EXISTS memory_session_summaries (
+        scenario_id TEXT NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL, data TEXT NOT NULL,
+        PRIMARY KEY(scenario_id, session_id)
+      );
       CREATE TABLE IF NOT EXISTS contexts (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
         scenario_id TEXT NOT NULL REFERENCES scenarios(id), run_id TEXT NOT NULL, agent_id TEXT NOT NULL,
@@ -59,6 +85,7 @@ export class ScenarioStore {
         id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL REFERENCES scenarios(id), data TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS messages_scene ON messages(scenario_id, seq);
+      CREATE INDEX IF NOT EXISTS messages_scene_session ON messages(scenario_id, json_extract(data, '$.sessionId'), seq);
       CREATE INDEX IF NOT EXISTS events_scene ON events(scenario_id, seq);
       CREATE INDEX IF NOT EXISTS events_run ON events(run_id, seq);
       CREATE INDEX IF NOT EXISTS contexts_scene ON contexts(scenario_id, seq);
@@ -175,6 +202,7 @@ export class ScenarioStore {
     const scene = {
       id: randomUUID(), dshSessionId: sessionId || '', title: '新场景', brief: '', cwd,
       mode: 'confidence', ownerId: '', summarizerId: 'codex', agents: structuredClone(DEFAULT_AGENTS),
+      teamStrategy: 'auto', inboxPolicy: 'arrival',
       reviewRounds: 2, revision: 1, createdAt: now(), updatedAt: now(),
     }
     this.db.prepare('INSERT INTO scenarios VALUES (?, ?, ?, ?)').run(scene.id, sessionId || null, scene.updatedAt, JSON.stringify(scene))
@@ -243,6 +271,23 @@ export class ScenarioStore {
       .all(runId).map(row => ({ ...decode(row), seq: row.seq }))
   }
 
+  message(id) {
+    const row = this.db.prepare('SELECT seq, data FROM messages WHERE id = ?').get(id)
+    return row ? { ...decode(row), seq: row.seq } : undefined
+  }
+
+  memoryMessages(scenarioId, sessionId, { after = 0, through = Number.MAX_SAFE_INTEGER, limit = 24 } = {}) {
+    return this.db.prepare(`SELECT seq, data FROM messages WHERE scenario_id = ? AND seq > ? AND seq <= ?
+      AND json_extract(data, '$.sessionId') = ? ORDER BY seq LIMIT ?`)
+      .all(scenarioId, after, through, sessionId, limitBetween(limit, 24, 120))
+      .map(row => ({ ...decode(row), seq: row.seq }))
+  }
+
+  lastMemoryMessage(scenarioId, sessionId) {
+    return this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS seq FROM messages
+      WHERE scenario_id = ? AND json_extract(data, '$.sessionId') = ?`).get(scenarioId, sessionId).seq
+  }
+
   event(scenarioId, runId, type, payload = {}) {
     const entry = { eventId: randomUUID(), schemaVersion: 1, scenarioId, runId, type, at: now(), ...payload }
     const result = this.db.prepare('INSERT INTO events(scenario_id, run_id, type, data) VALUES (?, ?, ?, ?)')
@@ -300,15 +345,18 @@ export class ScenarioStore {
   }
 
   memories(scenarioId, scope = 'scenario') {
-    return this.db.prepare(`SELECT data FROM memories WHERE scope = ? AND (? = 'legacy' OR scenario_id = ?)
-      ORDER BY updated_at DESC`).all(scope, scope, scenarioId).map(decode)
+    return this.db.prepare(`SELECT memories.data, json_extract(initial.data, '$.origin') AS creation_origin
+      FROM memories LEFT JOIN memory_history initial ON initial.memory_id = memories.id AND initial.revision = 1
+      WHERE memories.scope = ? AND (? = 'legacy' OR memories.scenario_id = ?) ORDER BY memories.updated_at DESC`)
+      .all(scope, scope, scenarioId)
+      .map(row => row.creation_origin ? { ...decode(row), creationOrigin: JSON.parse(row.creation_origin) } : decode(row))
   }
 
   memory(id) {
     return decode(this.db.prepare('SELECT data FROM memories WHERE id = ?').get(id))
   }
 
-  saveMemory(input, expectedRevision) {
+  saveMemory(input, expectedRevision, origin = {}) {
     return this.transaction(() => {
       const existing = input.id ? this.memory(input.id) : undefined
       if (input.id && !existing) throw new Error('记忆不存在')
@@ -318,16 +366,139 @@ export class ScenarioStore {
         createdAt: now(), ...existing, ...input, id: existing?.id || randomUUID(),
         revision: (existing?.revision || 0) + 1, updatedAt: now(),
       }
+      if (entry.scenarioId && entry.scope === 'scenario') {
+        entry.title = redactMemoryText(entry.title)
+        entry.content = redactMemoryText(entry.content)
+        entry.number = existing?.number || this.nextMemoryNumber(entry.scenarioId)
+        entry.origin = this.memoryOrigin(entry.scenarioId, entry.sources, origin)
+      }
       this.db.prepare(`INSERT INTO memories VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data`)
         .run(entry.id, entry.scenarioId || null, entry.scope, entry.updatedAt, JSON.stringify(entry))
       this.db.prepare('INSERT INTO memory_revisions VALUES (?, ?, ?)').run(entry.id, entry.revision, JSON.stringify(entry))
+      if (entry.scenarioId && entry.scope === 'scenario') this.recordMemoryChange(entry, existing)
       return entry
     })
   }
 
   memoryRevisions(id) {
     return this.db.prepare('SELECT data FROM memory_revisions WHERE id = ? ORDER BY revision DESC').all(id).map(decode)
+  }
+
+  nextMemoryNumber(scenarioId) {
+    return this.db.prepare(`SELECT COALESCE(MAX(json_extract(data, '$.number')), 0) + 1 AS number
+      FROM memories WHERE scenario_id = ? AND scope = 'scenario'`).get(scenarioId).number
+  }
+
+  memoryOrigin(scenarioId, sources, origin) {
+    const source = this.memorySource(scenarioId, origin)
+      || (Array.isArray(sources) ? sources.map(value => this.memorySource(scenarioId, value)).find(Boolean) : undefined)
+    return {
+      trigger: origin.trigger || 'manual',
+      actor: redactMemoryText(origin.actor).slice(0, 200),
+      reason: redactMemoryText(origin.reason).slice(0, 600),
+      ...(source || {}),
+    }
+  }
+
+  memorySource(scenarioId, source) {
+    if (!source || typeof source !== 'object') return undefined
+    const messageId = source.messageId || (['message', 'user-message', 'agent-message'].includes(source.type) ? source.id : undefined)
+    const message = typeof messageId === 'string' ? this.message(messageId) : undefined
+    const runId = source.runId || message?.runId || (source.type === 'run' ? source.id : undefined)
+    const run = typeof runId === 'string' ? this.run(runId) : undefined
+    if ((message && message.scenarioId !== scenarioId) || (run && run.scenarioId !== scenarioId)) return undefined
+    if (message?.runId && runId && message.runId !== runId) return undefined
+    const storedSessionId = message?.sessionId || run?.sessionId
+    if (storedSessionId && source.sessionId && storedSessionId !== source.sessionId) return undefined
+    const sessionId = storedSessionId || source.sessionId
+    if (typeof sessionId !== 'string' || !sessionId) return undefined
+    const session = this.scenario(scenarioId)?.sessions.find(item => item.id === sessionId)
+    const available = Boolean(message || run || session || sessionId === `local-${scenarioId}`
+      || this.lastMemoryMessage(scenarioId, sessionId))
+    if (!available && !messageId && !runId) return undefined
+    return {
+      sessionId, sessionTitle: session?.title || run?.scene?.sessions?.find(item => item.id === sessionId)?.title || '',
+      ...(runId ? { runId, runAvailable: Boolean(run) } : {}),
+      ...(messageId ? { messageId, messageAvailable: Boolean(message) } : {}),
+      sourceAt: message?.at || run?.createdAt || source.sourceAt,
+      excerpt: messageExcerpt(message?.text || source.quote),
+      stage: redactMemoryText(message?.stage || source.stage).slice(0, 120),
+      available,
+    }
+  }
+
+  recordMemoryChange(entry, previous) {
+    const historySeq = this.db.prepare(`SELECT COALESCE(MAX(history_seq), 0) + 1 AS sequence
+      FROM memory_history WHERE scenario_id = ?`).get(entry.scenarioId).sequence
+    const action = !previous ? 'created' : previous.status === entry.status ? 'updated'
+      : ['confirmed', 'archived', 'deleted', 'expired', 'conflict'].includes(entry.status) ? entry.status : 'updated'
+    const item = {
+      historySeq, number: entry.number, memoryId: entry.id, revision: entry.revision, at: entry.updatedAt,
+      title: redactMemoryText(entry.title), excerpt: redactMemoryText(entry.content).slice(0, 200), action,
+      audience: entry.audience, roleId: entry.roleId, kind: entry.kind, status: entry.status, origin: entry.origin,
+    }
+    this.db.prepare('INSERT INTO memory_history VALUES (?, ?, ?, ?, ?)')
+      .run(entry.scenarioId, historySeq, entry.id, entry.revision, JSON.stringify(item))
+  }
+
+  memoryHistory(scenarioId, { before, limit, number } = {}) {
+    const size = limitBetween(limit, 40, 120)
+    const rows = this.db.prepare(`SELECT history.data, json_extract(message.data, '$.text') AS source_text
+      FROM memory_history AS history LEFT JOIN messages AS message
+        ON message.id = json_extract(history.data, '$.origin.messageId') AND message.scenario_id = history.scenario_id
+      WHERE history.scenario_id = ? AND history.history_seq < ?
+      AND (? IS NULL OR json_extract(history.data, '$.number') = ?)
+      ORDER BY history.history_seq DESC LIMIT ?`)
+      .all(scenarioId, Number.isSafeInteger(before) && before > 0 ? before : Number.MAX_SAFE_INTEGER, number ?? null, number ?? null, size + 1)
+    const history = rows.slice(0, size).map(row => {
+      const item = decode(row)
+      if (item.origin && !item.origin.excerpt && row.source_text) item.origin.excerpt = messageExcerpt(row.source_text)
+      return item
+    })
+    return { history, hasOlder: rows.length > size }
+  }
+
+  sessionSummary(scenarioId, sessionId) {
+    return decode(this.db.prepare('SELECT data FROM memory_session_summaries WHERE scenario_id = ? AND session_id = ?')
+      .get(scenarioId, sessionId))
+  }
+
+  saveSessionSummary(summary, expectedCursor) {
+    const current = this.sessionSummary(summary.scenarioId, summary.sessionId)
+    if ((current?.lastMessageSeq || 0) !== expectedCursor) throw conflict()
+    const next = { ...summary, updatedAt: now(), revision: (current?.revision || 0) + 1 }
+    this.db.prepare(`INSERT INTO memory_session_summaries VALUES (?, ?, ?)
+      ON CONFLICT(scenario_id, session_id) DO UPDATE SET data = excluded.data`)
+      .run(next.scenarioId, next.sessionId, JSON.stringify(next))
+    return next
+  }
+
+  migrateMemoryHistory() {
+    this.transaction(() => {
+      if (this.db.prepare('SELECT 1 FROM migrations WHERE id = ?').get('memory-history-v1')) return
+      const originals = this.db.prepare(`SELECT data FROM memories WHERE scope = 'scenario' AND scenario_id IS NOT NULL
+        ORDER BY COALESCE(json_extract(data, '$.createdAt'), updated_at), id`).all().map(decode)
+      const changes = []
+      for (const original of originals) {
+        const number = original.number || this.nextMemoryNumber(original.scenarioId)
+        const versions = this.memoryRevisions(original.id).reverse()
+        let previous
+        for (const revision of versions.length ? versions : [original]) {
+          const entry = { ...revision, number, scenarioId: original.scenarioId,
+            origin: revision.origin || this.memoryOrigin(original.scenarioId, revision.sources, { trigger: 'historical' }) }
+          const exists = this.db.prepare('SELECT 1 FROM memory_history WHERE memory_id = ? AND revision = ?')
+            .get(entry.id, entry.revision)
+          if (!exists) changes.push({ entry, previous })
+          previous = entry
+        }
+        const origin = original.origin || this.memoryOrigin(original.scenarioId, original.sources, { trigger: 'historical' })
+        this.db.prepare('UPDATE memories SET data = ? WHERE id = ?').run(JSON.stringify({ ...original, number, origin }), original.id)
+      }
+      changes.sort((left, right) => String(left.entry.updatedAt).localeCompare(String(right.entry.updatedAt)))
+      for (const { entry, previous } of changes) this.recordMemoryChange(entry, previous)
+      this.db.prepare('INSERT INTO migrations VALUES (?, ?)').run('memory-history-v1', now())
+    })
   }
 
   migrate(home) {
@@ -445,23 +616,28 @@ export function estimateTokens(text) {
 }
 
 export function relevantMemories(entries, input, budget = 2400, roleId = '') {
-  const terms = new Set((input.toLowerCase().match(/[a-z0-9_]{2,}|[\u3400-\u9fff]{2}/g) || []))
-  const eligible = entries.filter(entry => entry.enabled && ['confirmed', 'candidate', 'conflict'].includes(entry.status)
+  const terms = new Set(String(input || '').toLowerCase().match(/[a-z0-9_]{2,}/g) || [])
+  for (const word of String(input || '').match(/[\u3400-\u9fff]{2,}/g) || []) {
+    for (let index = 0; index < word.length - 1; index++) terms.add(word.slice(index, index + 2))
+  }
+  const eligible = entries.filter(entry => entry.enabled && entry.status === 'confirmed'
     && (entry.audience !== 'role' || entry.roleId === roleId))
   const ranked = eligible.map(entry => {
     const text = `${entry.title} ${entry.content}`.toLowerCase()
     const matches = [...terms].filter(term => text.includes(term)).length
-    return { entry, score: matches * 3 + (entry.pinned ? 100 : 0) + (['preference', 'decision', 'constraint'].includes(entry.kind) ? 5 : 0) }
-  }).filter(item => item.score > 0).sort((a, b) => b.score - a.score)
+    const required = entry.pinned || promptMemoryKinds.has(entry.kind)
+    return { entry, required, score: matches * 3 + (entry.kind === 'decision' ? 2 : 0), matches }
+  }).filter(item => item.required || item.matches > 0).sort((left, right) => Number(right.required) - Number(left.required)
+    || Number(right.entry.pinned) - Number(left.entry.pinned) || right.score - left.score)
   const selected = []
   let tokens = 0
-  for (const { entry, score } of ranked) {
-    const cost = estimateTokens(entry.content) + estimateTokens(entry.title)
-    let content = entry.content
-    let reason = entry.pinned ? '用户固定' : score >= 5 && ['preference', 'decision', 'constraint'].includes(entry.kind) ? '场景约束与偏好' : '与本轮任务相关'
+  for (const { entry, required } of ranked) {
+    let content = redactMemoryText(entry.content)
+    const cost = estimateTokens(content) + estimateTokens(entry.title)
+    let reason = entry.pinned ? '用户固定' : required ? '已确认的约束与偏好' : '与本轮任务相关'
     if (tokens + cost > budget) {
       const remaining = budget - tokens - estimateTokens(entry.title) - 30
-      if (remaining < 100 || (!entry.pinned && !['preference', 'decision', 'constraint'].includes(entry.kind))) continue
+      if (remaining < 100 || !required) continue
       content = content.slice(0, remaining)
       reason += '，内容按本轮预算截取，完整记录可在记忆页查看'
     }

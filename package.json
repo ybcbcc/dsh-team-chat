@@ -28,6 +28,8 @@
     "./workbench-host": "./workbench-host.js",
     "./scenario-store": "./scenario-store.js",
     "./coordinator": "./coordinator.js",
+    "./model-routing": "./model-routing.js",
+    "./memory-compiler": "./memory-compiler.js",
     "./context-dashboard": "./context-dashboard.js",
     "./context-insights": "./context-insights.js",
     "./workbench-views": "./workbench-views.js",
@@ -43,17 +45,22 @@
     "workbench-host.js",
     "scenario-store.js",
     "coordinator.js",
+    "model-routing.js",
+    "memory-compiler.js",
     "context-dashboard.js",
     "context-insights.js",
+    "test/coordinator-recovery.mjs",
     "test/render-smoke.cjs",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "README.md",
     "docs/*.html",
+    "docs/*.md",
     "docs/images/*.png"
   ],
   "scripts": {
+    "test:coordinator": "node --test test/coordinator-recovery.mjs",
     "test:render": "node test/render-smoke.cjs"
   },
   "dsh": {

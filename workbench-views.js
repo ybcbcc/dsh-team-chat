@@ -107,6 +107,33 @@ function memberSkills(agent, skills, editing) {
     </div>`).join('')}</div></details>`).join('') || '<p class="sc-small sc-muted">暂无技能，可在编辑时添加。</p>'
 }
 
+function orchestrationSettings(scene, catalog) {
+  const strategy = scene.teamStrategy || (scene.ownerId ? 'manual' : 'auto')
+  const policy = scene.routingPolicy || {}
+  const selectOptions = (models, value, fallback, encode) => {
+    const options = [{ id: '', label: fallback }, ...models.map(model => ({ id: encode(model), label: model.label || model.id }))]
+    if (value && !options.some(item => item.id === value)) options.push({ id: value, label: `${value} · 当前目录未显示` })
+    return options.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === value ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')
+  }
+  const codexOptions = (field, fallback) => selectOptions(catalog.codex || [], policy[field] || '', fallback, model => model.id)
+  const deepseek = policy.deepseekModel ? `${policy.deepseekProvider || ''}::${policy.deepseekModel}` : ''
+  const deepseekOptions = selectOptions(catalog.dsh || [], deepseek, '默认优先 1017', model => `${model.provider || ''}::${model.id}`)
+  return `<div class="sc-mode-settings sc-fields">
+    <label>组队方式<select data-setting="teamStrategy" data-focus="team-strategy"><option value="auto" ${strategy === 'auto' ? 'selected' : ''}>自动组队</option><option value="manual" ${strategy === 'manual' ? 'selected' : ''}>固定现有团队</option></select></label>
+    <label>任务负责人<select data-setting="ownerId"><option value="">${strategy === 'auto' ? '自动选择 Owner' : '请选择负责人'}</option>${scene.agents.map(agent => `<option value="${escapeHtml(agent.id)}" ${agent.id === scene.ownerId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}</select></label>
+    <label>处理成员回报<select data-setting="inboxPolicy">${[['arrival', '收到即开始，按到达排队'], ['batch', '短时间合并回报'], ['stage', '当前批次齐了再处理']].map(([value, label]) => `<option value="${value}" ${(scene.inboxPolicy || 'arrival') === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+    ${strategy === 'auto' ? `<details class="sc-routing-settings sc-full" data-detail="model-routing"><summary>自动组队的模型偏好</summary><div class="sc-fields">
+      <label>Owner 优先模型<select data-routing="ownerModel">${codexOptions('ownerModel', '默认优先 GPT-6.2 Sol')}</select></label>
+      <label>常规任务优先模型<select data-routing="generalModel">${codexOptions('generalModel', '默认优先 GPT-6.2 Sol')}</select></label>
+      <label>视觉任务优先模型<select data-routing="visionModel">${codexOptions('visionModel', '默认优先 GPT-6.1 Terra')}</select></label>
+      <label>DeepSeek 优先模型<select data-routing="deepseek">${deepseekOptions}</select></label>
+      <label>常规任务思考强度<select data-routing="defaultEffort">${[...new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra', policy.defaultEffort].filter(Boolean))].map(effort => `<option value="${escapeHtml(effort)}" ${effort === (policy.defaultEffort || 'medium') ? 'selected' : ''}>${escapeHtml(effortLabel(effort))}</option>`).join('')}</select></label>
+      <label class="sc-check"><input type="checkbox" data-routing="visionAvailable" ${policy.visionAvailable ? 'checked' : ''}>已接入手机或浏览器操作工具</label>
+      <p class="sc-full sc-small sc-muted">实际选择以当前模型目录和支持的强度为准。Owner 优先复用场景里的成员，缺少能力时才补充。</p>
+    </div></details>` : ''}
+  </div>`
+}
+
 export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMembers = new Set()) {
   const agents = scene.agents
   const skills = [...catalog.skills.filter(skill => !skill.custom), ...(scene.customSkills || []).map(skill => ({ ...skill, name: `custom:${skill.id}`, label: skill.name, custom: true }))]
@@ -134,6 +161,7 @@ export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMem
           <label>接入方式<select data-agent-field="engine" data-agent="${agent.id}"><option value="codex" ${agent.engine === 'codex' ? 'selected' : ''}>Codex 直接接入</option><option value="dsh" ${agent.engine === 'dsh' ? 'selected' : ''}>DSH 模型供应商</option><option value="agent" ${agent.engine === 'agent' ? 'selected' : ''}>其他 Agent · DSH 接入</option></select></label>
           ${agent.engine === 'agent' ? `<label>Agent 接入<input data-agent-field="agentProvider" data-agent="${agent.id}" data-focus="${agent.id}-backend" list="sc-agent-backends" value="${escapeHtml(agent.agentProvider || '')}"></label>` : ''}
           ${agent.engine === 'codex' ? `<label class="sc-check sc-member-fast"><input type="checkbox" data-agent-flag="fast" data-agent="${agent.id}" ${agent.fast ? 'checked' : ''}>快速模式</label>` : ''}
+          ${canSelectModel && scene.mode === 'orchestration' ? `<label class="sc-check"><input type="checkbox" data-agent-flag="routeLocked" data-agent="${agent.id}" ${agent.routeLocked ? 'checked' : ''}>自动组队时沿用此成员的模型和强度</label>` : ''}
         </fieldset></section>
         <section class="sc-member-section"><div class="sc-member-section-head"><h3>技能</h3>${editing ? `<button type="button" class="sc-plain" data-action="new-skill" data-agent="${agent.id}">＋ 新增技能</button>` : ''}</div>${memberSkills(agent, skills, editing)}</section>
         <section class="sc-member-section"><div class="sc-member-section-head"><h3>扩展成员</h3>${canSelectModel && editing ? `<button type="button" class="sc-plain" data-action="add-variant" data-agent="${agent.id}">＋ 添加强度档位</button>` : ''}</div>
@@ -153,11 +181,11 @@ export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMem
     ${scene.mode === 'confidence' ? `<div class="sc-mode-settings sc-fields">
       <label>交叉验证轮数<input type="number" min="0" step="1" data-setting="reviewRounds" value="${scene.reviewRounds}"><span class="sc-small sc-muted">每轮互审后补充核实。0 表示持续验证，直到一致或你停止。</span></label>
       <label>统一结论由谁汇总<select data-setting="summarizerId">${agents.map(agent => `<option value="${agent.id}" ${agent.id === scene.summarizerId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}</select></label>
-    </div>` : `<div class="sc-mode-settings sc-fields"><label>任务负责人 Owner<select data-setting="ownerId"><option value="">请选择负责人</option>${agents.map(agent => `<option value="${agent.id}" ${agent.id === scene.ownerId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}</select></label></div>`}
+    </div>` : orchestrationSettings(scene, catalog)}
     <div class="sc-subsection-head"><h2>协作成员</h2><button type="button" data-action="reload-catalog">刷新模型与技能</button></div>
     <p class="sc-small sc-muted">新模型先在 DSH 的模型设置中配置供应商，再刷新目录。其他 Agent 先启用其 DSH 接入插件，再选择接入名称。</p>
     <datalist id="sc-agent-backends">${(catalog.agentBackends || []).map(backend => `<option value="${escapeHtml(backend.id)}">${escapeHtml(backend.label)}</option>`).join('')}</datalist>
-    <div class="sc-roster">${members}<button type="button" class="sc-add-member" data-action="add-agent" ${agents.length >= 8 ? 'disabled' : ''}>＋ 添加成员</button></div>
+    <div class="sc-roster">${members}<button type="button" class="sc-add-member" data-action="add-agent" ${agents.length >= 64 ? 'disabled' : ''}>＋ 添加成员</button></div>
     <div class="sc-save-row"><button type="button" class="sc-primary" data-action="save-team">保存设置</button><span class="sc-small sc-muted">强度和扩展档位用于后续步骤；模型、角色与技能用于下一轮任务。</span></div>
     ${catalog.errors.length ? `<p class="sc-small sc-muted">${escapeHtml(catalog.errors.join('。'))}</p>` : ''}
   </section>`
@@ -169,38 +197,95 @@ function memoryAudienceOptions(scene, selected) {
   return `<option value="scene" ${selected === 'scene' ? 'selected' : ''}>场景共享</option>${unique.map(role => `<option value="role:${role.id}" ${selected === `role:${role.id}` ? 'selected' : ''}>${escapeHtml(role.name)}</option>`).join('')}`
 }
 
+const memoryKinds = Object.freeze({
+  constraint: '约束', fact: '事实', decision: '决策', preference: '偏好', blocker: '阻碍',
+  reference: '参考案例', practice: '有效做法', pitfall: '踩坑与规避', learning: '经验知识', note: '一般记录',
+})
+const memoryTriggers = {
+  manual: '手动保存', 'manual-consolidation': '手动整理', 'user-request': '用户要求记住',
+  'agent-tool': '成员保存', agent: '成员保存', import: '导入旧库', historical: '历史记录', milestone: '任务阶段整理',
+  'run-complete': '交付后整理', 'run-incomplete': '未完成时整理', compaction: '压缩时整理', 'context-limit': '接近上下文上限时整理',
+}
+const memoryChanges = { created: '新增', updated: '更新', confirmed: '确认', archived: '归档', deleted: '移除', expired: '过期', conflict: '标记冲突' }
+
+function memorySourceButton(source) {
+  const sessionId = source?.sessionId || ''
+  const runId = source?.runAvailable === false ? '' : source?.runId || (source?.type === 'run' ? source.id : '')
+  const messageId = source?.messageAvailable === false ? '' : source?.messageId || (['message', 'user-message', 'agent-message'].includes(source?.type) ? source.id : '')
+  if (source?.available === false) return '<span class="sc-small sc-muted">原记录不可打开</span>'
+  if (!sessionId && !runId && !messageId) return ''
+  return `<button type="button" class="sc-plain" data-action="memory-source" data-session="${escapeHtml(sessionId)}" data-title="${escapeHtml(source?.sessionTitle)}" data-run="${escapeHtml(runId)}" data-message="${escapeHtml(messageId)}">${escapeHtml(source?.sessionTitle || (messageId ? '打开原消息' : runId ? '打开原任务' : '打开来源会话'))}</button>`
+}
+
+function renderMemoryOrigin(origin, time) {
+  if (!origin) return ''
+  return `<div class="sc-small sc-muted">${escapeHtml(memoryTriggers[origin.trigger] || '记忆记录')}${origin.actor ? ` · ${escapeHtml(origin.actor === 'user' ? '用户' : origin.actor)}` : ''}${origin.sourceAt ? ` · 来源 ${escapeHtml(time(origin.sourceAt))}` : ''}
+    ${memorySourceButton(origin)}${origin.stage ? ` · ${escapeHtml(origin.stage)}` : ''}${origin.reason ? `<div>${escapeHtml(origin.reason)}</div>` : ''}</div>`
+}
+
 export function renderMemoryPage(state, { badge, prose, time }) {
   const { scene, memories, memoryId, memoryDraft, revisions, memoryScope, memoryQuery, memoryAudience } = state
+  const { memoryKind = 'all', memoryHistory = [], memoryHistoryOpen, memoryHistoryHasOlder, memoryHistoryLoading,
+    memoryHistoryNumber, memoryHistoryNumberDraft = '', memoryConsolidating } = state
   const entries = memories.filter(memory => (!memoryQuery || `${memory.title} ${memory.content}`.includes(memoryQuery))
+    && (memoryKind === 'all' || memory.kind === memoryKind)
     && (memoryAudience === 'all' || (memoryAudience === 'scene' ? memory.audience !== 'role' : memory.audience === 'role' && memory.roleId === memoryAudience.slice(5))))
   const memory = memories.find(item => item.id === memoryId)
   const fields = memoryDraft || memory
+  const messageSource = memoryDraft?.messageSource
   const audienceName = entry => entry.audience === 'role'
     ? scene.agents.find(agent => (agent.roleId || agent.id) === entry.roleId)?.name || '历史角色' : '场景共享'
   let detail = '<p class="sc-small sc-muted">选择一条记忆查看内容、采用状态和来源。</p>'
   if (fields && memoryDraft) {
-    detail = `<div class="sc-fields">
+    const saving = state.savingMemoryDraft === memoryDraft
+    detail = `${messageSource ? `<section class="sc-memory-draft-source" aria-label="记忆来源">
+      <div><strong>来源消息</strong><button type="button" class="sc-plain" data-action="clear-memory-message-source" ${saving ? 'disabled' : ''}>移除消息引用</button></div>
+      <small class="sc-muted">${[messageSource.sessionTitle, messageSource.speaker, time(messageSource.at)].filter(Boolean).map(escapeHtml).join(' · ')}</small>
+      ${messageSource.excerpt ? `<blockquote>${escapeHtml(messageSource.excerpt)}</blockquote>` : ''}
+    </section>` : ''}<div class="sc-fields" ${saving ? 'inert aria-busy="true"' : ''}>
       <label class="sc-full">标题<input data-memory-field="title" data-focus="memory-title" value="${escapeHtml(fields.title)}"></label>
       <label>所属范围<select data-memory-audience>${memoryAudienceOptions(scene, fields.audience === 'role' ? `role:${fields.roleId}` : 'scene')}</select></label>
-      <label>类型<select data-memory-field="kind">${[['constraint', '约束'], ['fact', '事实'], ['decision', '决策'], ['preference', '偏好'], ['blocker', '阻碍'], ['learning', '经验知识'], ['note', '一般记录']].map(([value, label]) => `<option value="${value}" ${value === fields.kind ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+      <label>类型<select data-memory-field="kind">${Object.entries(memoryKinds).map(([value, label]) => `<option value="${value}" ${value === fields.kind ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label>状态<select data-memory-field="status">${[['candidate', '待核实'], ['confirmed', '已确认'], ['conflict', '存在冲突'], ['expired', '已过期'], ['archived', '已归档']].map(([value, label]) => `<option value="${value}" ${value === fields.status ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label class="sc-full">内容<textarea data-memory-field="content" data-focus="memory-content">${escapeHtml(fields.content)}</textarea></label>
-    </div><div class="sc-detail-actions"><button type="button" class="sc-primary" data-action="save-memory">保存记忆</button><button type="button" data-action="cancel-memory">取消编辑</button></div>`
+    </div><div class="sc-detail-actions"><button type="button" class="sc-primary" data-action="save-memory" ${saving ? 'disabled' : ''}>${saving ? '正在保存…' : '保存记忆'}</button><button type="button" data-action="cancel-memory" ${saving ? 'disabled' : ''}>取消编辑</button></div>`
   } else if (memory) {
-    detail = `<h3>${escapeHtml(memory.title)}</h3>${badge(memory.status)}<span class="sc-memory-audience">${escapeHtml(audienceName(memory))}</span>
+    detail = `<h3>${memory.number ? `#${Number(memory.number)} · ` : ''}${escapeHtml(memory.title)}</h3>${badge(memory.status)}<span class="sc-memory-audience">${escapeHtml(audienceName(memory))} · ${escapeHtml(memoryKinds[memory.kind] || '一般记录')}</span>
       <p class="sc-prose">${prose(memory.content)}</p><p class="sc-small sc-muted">版本 v${memory.revision} · ${escapeHtml(time(memory.updatedAt))}</p>
-      ${memory.scope === 'scenario' ? `<div class="sc-detail-actions"><label class="sc-check"><input type="checkbox" data-memory-toggle="enabled" ${memory.enabled ? 'checked' : ''}>后续请求采用</label><label class="sc-check"><input type="checkbox" data-memory-toggle="pinned" ${memory.pinned ? 'checked' : ''}>固定重要记忆</label></div>` : ''}
-      <details><summary>来源</summary><pre class="sc-source-json">${escapeHtml(JSON.stringify(memory.sources || [], null, 2))}</pre></details>
+      ${memory.scope === 'scenario' ? `<div class="sc-detail-actions"><label class="sc-check"><input type="checkbox" data-memory-toggle="enabled" ${memory.enabled && memory.status === 'confirmed' ? 'checked' : ''} ${memory.status !== 'confirmed' ? 'disabled' : ''}>后续请求采用</label><label class="sc-check"><input type="checkbox" data-memory-toggle="pinned" ${memory.pinned ? 'checked' : ''}>固定重要记忆</label></div>` : ''}
+      <details open><summary>保存与来源</summary>
+        ${memory.creationOrigin ? `<div class="sc-small"><strong>首次写入</strong>${renderMemoryOrigin(memory.creationOrigin, time)}</div>` : ''}
+        ${!memory.creationOrigin || memory.revision > 1 ? `<div class="sc-small"><strong>${memory.revision > 1 ? '最近修订' : '写入记录'}</strong>${renderMemoryOrigin(memory.origin, time)}</div>` : ''}
+        ${(memory.sources || []).map(source => `<div class="sc-small">${memorySourceButton(source)}${source.stage ? ` · ${escapeHtml(source.stage)}` : ''}${source.quote ? `<blockquote>${escapeHtml(source.quote)}</blockquote>` : ''}${source.path ? `<span>${escapeHtml(source.path)}</span>` : ''}${source.evidence?.length ? `<details><summary>证据详情</summary><pre class="sc-source-json">${escapeHtml(JSON.stringify(source.evidence, null, 2))}</pre></details>` : ''}</div>`).join('')}</details>
       <div class="sc-detail-actions">${memory.scope === 'legacy' ? '<button type="button" data-action="import-memory">导入当前场景</button>' : '<button type="button" data-action="edit-memory">编辑</button><button type="button" data-action="memory-revisions">修订历史</button><button type="button" data-action="delete-memory">移除</button>'}</div>
-      ${revisions.map(revision => `<details class="sc-memory-revision"><summary>v${revision.revision} · ${escapeHtml(time(revision.updatedAt))}</summary><p class="sc-prose">${escapeHtml(revision.content)}</p><button type="button" data-action="restore-memory" data-revision="${revision.revision}">恢复此版本</button></details>`).join('')}`
+      ${revisions.map(revision => `<details class="sc-memory-revision"><summary>v${revision.revision} · ${escapeHtml(time(revision.updatedAt))}</summary><p class="sc-prose">${escapeHtml(revision.content)}</p>${renderMemoryOrigin(revision.origin, time)}<button type="button" data-action="restore-memory" data-revision="${revision.revision}">恢复此版本</button></details>`).join('')}`
   }
+  const history = memoryHistoryOpen && memoryScope !== 'legacy' ? `<section class="sc-memory-history" aria-busy="${Boolean(memoryHistoryLoading)}">
+    <h3>记忆写入历史</h3>
+    <form class="sc-memory-history-search" id="sc-memory-history-search"><label for="sc-memory-history-number">按编号查找</label>
+      <input id="sc-memory-history-number" placeholder="例如 #50" maxlength="22" value="${escapeHtml(memoryHistoryNumberDraft)}"><button type="submit">查找</button>
+      ${memoryHistoryNumber ? '<button type="button" class="sc-plain" data-action="memory-history-clear">清除筛选</button>' : ''}</form>
+    ${memoryHistory.length ? `<ol>${memoryHistory.map(item => `<li class="sc-memory-revision">
+      <div><strong>#${Number(item.number)} · ${escapeHtml(item.title)}</strong> <span class="sc-small">${escapeHtml(memoryChanges[item.action] || '更新')} · v${Number(item.revision)} · ${escapeHtml(time(item.at))}</span></div>
+      <div class="sc-small sc-muted">${escapeHtml(audienceName(item))} · ${escapeHtml(memoryKinds[item.kind] || '一般记录')}</div>
+      ${renderMemoryOrigin(item.origin, time)}
+      <div class="sc-small">${escapeHtml(item.excerpt)}</div>
+      ${item.origin?.excerpt ? `<details class="sc-small"><summary>原消息摘录</summary><blockquote>${escapeHtml(item.origin.excerpt)}</blockquote></details>` : ''}
+    </li>`).join('')}</ol>` : memoryHistoryLoading ? '<p class="sc-small sc-muted" role="status">正在读取写入历史…</p>'
+      : `<p class="sc-small sc-muted" role="status">${memoryHistoryNumber ? `没有 #${Number(memoryHistoryNumber)} 的写入记录。` : '还没有记忆写入记录。'}</p>`}
+    ${memoryHistoryHasOlder ? `<button type="button" class="sc-plain" data-action="memory-history-older" ${memoryHistoryLoading ? 'disabled' : ''}>加载更早的记录</button>` : ''}</section>` : ''
   return `<section class="sc-page" data-scroll="memory">
-    <div class="sc-section-head"><h2>场景与角色记忆</h2><button type="button" data-action="new-memory">新增记忆</button></div>
+    <div class="sc-section-head"><h2>场景与角色记忆</h2><div class="sc-detail-actions">
+      ${memoryScope !== 'legacy' ? `<button type="button" data-action="memory-history" aria-expanded="${Boolean(memoryHistoryOpen)}">写入历史</button>
+      <button type="button" data-action="consolidate-memory" ${memoryConsolidating ? 'disabled' : ''}>${memoryConsolidating ? '正在整理…' : '整理本会话'}</button>` : ''}
+      <button type="button" data-action="new-memory">新增记忆</button></div></div>
     <div class="sc-memory-filters"><label>资料库<select id="sc-memory-scope"><option value="scenario" ${memoryScope === 'scenario' ? 'selected' : ''}>当前场景</option><option value="legacy" ${memoryScope === 'legacy' ? 'selected' : ''}>旧版共享资料</option></select></label>
       ${memoryScope !== 'legacy' ? `<label>记忆层级<select id="sc-memory-audience"><option value="all" ${memoryAudience === 'all' ? 'selected' : ''}>全部层级</option>${memoryAudienceOptions(scene, memoryAudience)}</select></label>` : ''}
+      <label>分类<select id="sc-memory-kind"><option value="all" ${memoryKind === 'all' ? 'selected' : ''}>全部分类</option>${Object.entries(memoryKinds).map(([value, label]) => `<option value="${value}" ${value === memoryKind ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label>搜索<input id="sc-memory-query" data-focus="memory-query" value="${escapeHtml(memoryQuery)}" placeholder="标题或内容"></label></div>
-    <p class="sc-small sc-muted">场景共享保存项目事实与共同约束。角色记忆保存专属方法与经验，同角色的扩展成员共用。</p>
-    <div class="sc-memory-layout"><div class="sc-memory-list">${entries.map(entry => `<button type="button" class="sc-memory-row" data-action="pick-memory" data-id="${entry.id}" aria-pressed="${entry.id === memoryId}">${escapeHtml(entry.title)}<span class="sc-small">${escapeHtml(audienceName(entry))} · v${entry.revision} ${badge(entry.status)}</span></button>`).join('') || '<p class="sc-small sc-muted">在这个层级新增记忆，或切换层级查看已有知识。</p>'}</div><section class="sc-memory-detail">${detail}</section></div>
+    <p class="sc-small sc-muted">已确认的记忆会供后续请求选用。候选条目可在核实来源后确认。</p>
+    ${history}
+    <div class="sc-memory-layout"><div class="sc-memory-list">${entries.map(entry => `<button type="button" class="sc-memory-row" data-action="pick-memory" data-id="${entry.id}" aria-pressed="${entry.id === memoryId}">${entry.number ? `#${Number(entry.number)} · ` : ''}${escapeHtml(entry.title)}<span class="sc-small">${escapeHtml(audienceName(entry))} · ${escapeHtml(memoryKinds[entry.kind] || '一般记录')} · v${entry.revision} ${badge(entry.status)}</span></button>`).join('') || '<p class="sc-small sc-muted">这个筛选范围还没有记忆。</p>'}</div><section class="sc-memory-detail">${detail}</section></div>
   </section>`
 }
 

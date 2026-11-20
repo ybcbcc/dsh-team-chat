@@ -23,6 +23,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { isIP } from 'node:net'
 import { dirname, extname, join, delimiter } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { CHAT_PAGE } from './page.js'
@@ -46,6 +47,29 @@ const START_TIMEOUT_MS = 30000
  * page is served from its own port instead; 0 asks the OS for a free one.
  */
 const STANDALONE_PORTS = [18401, 18402, 18403, 18404, 0]
+
+function isLoopback(address) {
+  const value = String(address || '').toLowerCase().replace(/^::ffff:/, '')
+  return value === '::1' || (isIP(value) === 4 && value.startsWith('127.'))
+}
+
+function standaloneRejection(req) {
+  if (!isLoopback(req.socket.remoteAddress)) return 403
+  try {
+    const authority = req.headers.host || ''
+    const origin = new URL(`http://${authority}`)
+    if (origin.host.toLowerCase() !== authority.toLowerCase() ||
+      !(origin.hostname === 'localhost' || isLoopback(origin.hostname.replace(/^\[|\]$/g, '')))) return 403
+    if (req.headers.origin && req.headers.origin !== origin.origin) return 403
+    const site = req.headers['sec-fetch-site']
+    if (site === 'same-site' || site === 'cross-site') {
+      const openingPage = req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate'
+        && req.headers['sec-fetch-dest'] === 'document' && new URL(req.url, origin).pathname.replace(/\/+$/, '') === '/codex-chat'
+      if (!openingPage) return 403
+    }
+  } catch { return 403 }
+  return undefined
+}
 
 /**
  * Append one diagnostic line.
@@ -382,6 +406,7 @@ function createChannel(spec, cwd, model, hooks, threadOptions) {
     if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
       if (options.readOnly || options.permission === 'read-only') return { decision: 'decline' }
       if (options.permission === 'approve') return { decision: await requestApproval(message) ? 'accept' : 'decline' }
+      if (options.permission === 'default') return { decision: 'decline' }
       return { decision: unattendedDecision(message.params) }
     }
     if (message.method === 'item/permissions/requestApproval') {
@@ -560,6 +585,7 @@ export const inject = ['commands', 'workingDirectory', 'webServer', 'subagents',
  */
 export function apply(ctx) {
   const profileDir = typeof process.env.DSH_PROFILE_DIR === 'string' ? process.env.DSH_PROFILE_DIR : ''
+  const dataHome = process.env.DSH_HOME || join(homedir(), '.dsh')
   const explicitBin = typeof process.env.DSH_CODEX_BIN === 'string' ? process.env.DSH_CODEX_BIN : undefined
   const explicitModel = typeof process.env.DSH_CODEX_MODEL === 'string' ? process.env.DSH_CODEX_MODEL : undefined
   log(`apply execPath=${process.execPath} profile=${profileDir === '' ? '(empty)' : profileDir} node=${nodeExecutable().path} log=${LOG_PATH}`)
@@ -582,7 +608,7 @@ export function apply(ctx) {
    * @returns the absolute JSON path.
    */
   function historyPath() {
-    return join(homedir(), '.dsh', 'codex-chat', 'conversations.json')
+    return join(dataHome, 'codex-chat', 'conversations.json')
   }
 
   /**
@@ -623,7 +649,7 @@ export function apply(ctx) {
   let conversations = loadConversations()
 
   const workbench = createWorkbenchHost({ ctx, createChannel, resolveLauncher, defaultCwd: webCwd,
-    readJsonBody, writeJson, availableModels, storeUpload, log })
+    readJsonBody, writeJson, availableModels, storeUpload, log, dataHome })
   ctx.effect(() => () => workbench.dispose(), 'codex-chat: scene workbench')
 
   /** Write the newest conversations back to disk. */
@@ -774,6 +800,8 @@ export function apply(ctx) {
           id: row.id,
           label: typeof row.displayName === 'string' && row.displayName !== '' ? row.displayName : row.id,
           isDefault: row.isDefault === true,
+          defaultEffort: typeof row.defaultReasoningEffort === 'string' ? row.defaultReasoningEffort : '',
+          inputModalities: Array.isArray(row.inputModalities) ? row.inputModalities.filter(value => typeof value === 'string') : [],
           efforts: Array.isArray(row.supportedReasoningEfforts)
             ? row.supportedReasoningEfforts.map(effort => effort !== null && typeof effort === 'object' ? effort.reasoningEffort : undefined).filter(effort => typeof effort === 'string')
             : [],
@@ -1153,10 +1181,27 @@ export function apply(ctx) {
     }
   }
 
+  let connection
+  ctx.inject(['connection'], inner => {
+    const current = inner.connection
+    connection = current
+    inner.effect(() => () => { if (connection === current) connection = undefined }, 'codex-chat: connection admission')
+  })
+  const denyChat = (res, status) => writeJson(res, { ok: false, error: status === 401 ? '请先登录 DSH' : '当前请求无权访问场景协作' }, status)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/codex-chat',
-    handler: (req, res) => { void handleChat(req, res) },
+    handler: (req, res) => {
+      if (typeof connection?.admit === 'function') {
+        const admission = connection.admit(req)
+        if ('rejection' in admission) return denyChat(res, admission.rejection)
+        if (admission.peer?.principal?.kind !== 'owner') return denyChat(res, 403)
+      } else {
+        const rejection = standaloneRejection(req) || connection?.requestRejection?.(req)
+        if (rejection) return denyChat(res, rejection)
+      }
+      void handleChat(req, res)
+    },
   }), 'codex-chat: chat page route')
   log(`chat page at ${String(chatOrigin())}/codex-chat`)
 
@@ -1164,7 +1209,11 @@ export function apply(ctx) {
   // is also served from an independent loopback port (a different origin).
   ctx.effect(() => {
     let disposed = false
-    void startStandalone(handleChat).then((started) => {
+    void startStandalone((req, res) => {
+      const rejection = standaloneRejection(req)
+      if (rejection) return denyChat(res, rejection)
+      void handleChat(req, res)
+    }).then((started) => {
       if (started === undefined) {
         log('standalone page: no free loopback port')
         return

@@ -90,6 +90,7 @@ async function main() {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-render-smoke-'));
   const playwright = require(process.env.DSH_PLAYWRIGHT_MODULE || 'playwright');
   const { createWorkbenchHost } = await import(pathToFileURL(path.join(root, 'workbench-host.js')).href);
+  const { ScenarioStore } = await import(pathToFileURL(path.join(root, 'scenario-store.js')).href);
   const { CHAT_PAGE } = await import(pathToFileURL(path.join(root, 'page.js')).href);
   const events = new Map();
   const cleanups = [];
@@ -97,15 +98,37 @@ async function main() {
   const parents = new Map([[parent.id, parent]]);
   let createdSessions = 0;
   let externalCalls = 0;
+  let releaseSecondReview = () => {};
+  const secondReviewGate = new Promise(resolve => { releaseSecondReview = resolve; });
   const workspaceSessions = new Set();
   const nativeWorkspace = { id: 'workspace-render', path: temporary, title: '渲染工作区',
     attachSession: async sessionId => { workspaceSessions.add(sessionId); } };
   const result = {
     summary: '阶段处理完成，已保留证据。\n' + '这是一条用于检查成员独立滚动的过程记录。\n'.repeat(40), verdict: 'approved', needsExecution: false,
     answer: '工作区和团队协作流程已完成，来源可从上下文查看。', complete: true,
-    tasks: [{ id: 'inspect', agentId: 'codex', title: '核对场景资料', instruction: '读取并核对资料', dependencies: [], access: 'read' }],
+    evidence: ['场景资料核对记录'],
     memoryCandidates: [{ title: '场景知识', content: '知识内容保留来源与版本。', kind: 'learning' }],
   };
+  function resultForPrompt(prompt) {
+    if (prompt.startsWith('你是本机插件的记忆整理员')) return { summary: '当前会话已核对场景资料。', candidates: [] };
+    const graph = prompt.match(/当前任务图 (\[.*\])。现有成员 /)?.[1];
+    if (!graph) return result;
+    const tasks = JSON.parse(graph);
+    if (!tasks.length) {
+      const followOn = prompt.includes('再次核对当前需求');
+      const instruction = followOn ? '读取并再次核对当前需求' : '读取并核对场景资料';
+      const plan = [{ id: 'inspect', agentId: 'codex', title: '核对场景资料',
+        instruction, dependencies: [], access: followOn ? 'write' : 'read', acceptanceCriteria: '给出可核对的场景资料记录' }];
+      if (followOn) plan.push(
+        { id: 'write-note', agentId: 'codex', title: '写入补充说明', instruction: '追加一段有来源的说明',
+          dependencies: [], access: 'write', acceptanceCriteria: '保留说明和对应来源' },
+        { id: 'review', agentId: 'codex', title: '确认核对结果', instruction: '核验原材料 <样例> 与结果一致',
+          dependencies: ['inspect'], access: 'read', difficulty: 'hard', acceptanceCriteria: '附上逐项核对结果' },
+      );
+      return { summary: '已安排场景资料核对。', tasks: plan };
+    }
+    return { ...result, tasks: [], acceptTaskIds: tasks.filter(task => task.state === 'completed').map(task => task.id) };
+  }
   const ctx = {
     agents: { list: () => [...parents.values()], get: id => parents.get(id) },
     subagents: {
@@ -118,6 +141,7 @@ async function main() {
         return { childId: request.childId, dispose: async () => {},
           result: Promise.resolve({ stopReason: 'completed', structured: result, output: [] }) };
       }
+      const reply = resultForPrompt(request.prompt.map(part => part.text || '').join('\n'));
       let sequence = 0;
       const session = { id: request.childId };
       const emit = (type, data = {}) => events.get('session/event')?.(session, { type, data, seq: sequence++, time: Date.now() });
@@ -136,9 +160,9 @@ async function main() {
       emit('tool/result', { message: { source: { callId: 'command' }, content: [{ type: 'text', text: 'working tree clean' }] } });
       emit('step/start');
       emit('assistant/message', { step: 1, turn: 0, usage: { inputTokens: 220, cacheReadTokens: 80, outputTokens: 60 },
-        message: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
+        message: { content: [{ type: 'text', text: JSON.stringify(reply) }] } });
       return { childId: request.childId, dispose: async () => {},
-        result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(result) }] }) };
+        result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(reply) }] }) };
     } },
     on(name, listener) { events.set(name, listener); },
     inject(names, callback) {
@@ -175,7 +199,8 @@ async function main() {
           const delay = setTimeout(resolve, 90);
           signal.addEventListener('abort', () => { clearTimeout(delay); reject(new Error('已取消')); }, { once: true });
         });
-        return { status: 'completed', answer: JSON.stringify(result) };
+        if (prompt.includes('读取并再次核对当前需求') && !prompt.includes('当前任务图 ')) await secondReviewGate;
+        return { status: 'completed', answer: JSON.stringify(resultForPrompt(prompt)) };
       },
     };
   }
@@ -199,9 +224,11 @@ async function main() {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
+  const screenshots = process.env.DSH_SMOKE_SCREENSHOTS;
   let browser;
   let releaseRefresh = () => {};
   try {
+    if (screenshots) fs.mkdirSync(screenshots, { recursive: true });
     browser = await playwright.chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = [];
@@ -210,8 +237,10 @@ async function main() {
     await page.locator('[data-action="new-scene"]').click();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     await page.fill('#sc-draft', '记住当前场景的输出需要简短');
+    const firstRefresh = page.waitForResponse(response => /\/scenarios\/[^/?]+\?session=session-render-session$/.test(response.url()));
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.locator('.sc-message-assistant').filter({ hasText: '工作区和团队协作流程已完成' }).waitFor();
+    await (await firstRefresh).finished();
     assert.equal(await page.locator('.sc-agent').count(), 2);
     await checkMemberScrolling(page);
     await page.setViewportSize({ width: 360, height: 900 });
@@ -219,6 +248,10 @@ async function main() {
     await checkMemberScrolling(page);
     await page.setViewportSize({ width: 1280, height: 900 });
     const savedMemberWeights = await checkMemberResizing(page);
+    await page.reload();
+    await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+    assert.deepEqual(await page.locator('.sc-agent').evaluateAll(panes => panes.map(pane => pane.style.getPropertyValue('--sc-agent-weight'))), savedMemberWeights,
+      'Refreshing restores the session member height preferences in confidence mode');
     await page.locator('[data-action="collapse"]').first().click();
     assert.equal(await page.locator('.sc-agent-body:visible').count(), 1);
     await page.locator('[data-action="process-toggle"]').click();
@@ -230,12 +263,72 @@ async function main() {
     await page.fill('#sc-draft', '请安排团队核对场景资料');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('.sc-message-assistant').length >= 2);
+    await page.locator('.sc-collaboration .sc-transcript').getByText('读取并核对场景资料', { exact: false }).waitFor();
+    assert.equal(await page.locator('.sc-thread-pane').count(), 1, 'Orchestration focuses one transcript by default');
+    const [testScene] = (await (await page.request.get(`${origin}/codex-chat/v2/scenarios`)).json()).scenes;
+    const sceneUrl = `${origin}/codex-chat/v2/scenarios/${testScene.id}`;
+    const { scene: profileScene } = await (await page.request.get(sceneUrl)).json();
+    const savedProfiles = await page.request.patch(sceneUrl, { data: {
+      revision: profileScene.revision, teamStrategy: 'auto', agents: profileScene.agents.map(agent => agent.id === 'codex'
+        ? { ...agent, model: 'codex-test', effort: 'low', variants: [{ id: 'review-profile', name: '审查高档', difficulty: 'hard', effort: 'high' }] }
+        : agent),
+    } });
+    assert.equal(savedProfiles.ok(), true);
+    await page.locator('.sc-owner').getByText('自动组队', { exact: true }).waitFor();
+    await page.fill('#sc-draft', '请让原成员再次核对当前需求');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.locator('.sc-collaboration .sc-transcript').getByText('读取并再次核对当前需求', { exact: false }).waitFor();
+    const progress = page.locator('.sc-run-progress[data-state="running"]');
+    await progress.getByText('1 位成员执行中', { exact: true }).waitFor();
+    const mirror = await browser.newPage({ viewport: { width: 360, height: 900 } });
+    try {
+      await mirror.goto(`${origin}/codex-chat?dshSession=render-session`);
+      await mirror.locator('.sc-run-progress').getByText('1 位成员执行中', { exact: true }).waitFor();
+      await mirror.locator('[data-action="mobile-process"]').click();
+      assert.equal(await mirror.locator('.sc-run-progress').isVisible(), true, 'Live progress stays visible next to the mobile process view');
+    } finally { await mirror.close(); }
+    const plan = page.locator('.sc-collab-plan');
+    await plan.locator(':scope > summary').click();
+    const dependent = plan.locator('li').filter({ hasText: '确认核对结果' });
+    await dependent.getByText('等待前置任务：「核对场景资料」', { exact: true }).waitFor();
+    assert.match(await dependent.locator('summary').innerText(), /codex-test · 高 · 执行时可自动调整/);
+    await dependent.locator('summary').click();
+    await dependent.getByText('核验原材料 <样例> 与结果一致', { exact: true }).waitFor();
+    await dependent.getByText('附上逐项核对结果', { exact: true }).waitFor();
+    const pendingWriter = plan.locator('li').filter({ hasText: '写入补充说明' });
+    assert.match(await pendingWriter.locator('summary').innerText(), /codex-test · 低 · 执行时可自动调整/);
+    assert.match(await pendingWriter.innerText(), /等待同一成员结束「核对场景资料」/);
+    assert.match(await pendingWriter.innerText(), /等待本轮工作区写入名额：「核对场景资料」/);
+    assert.doesNotMatch(await page.locator('.sc-transcript').innerText(), /核验原材料 <样例>/, 'A planned instruction is readable before dispatch');
+    await dependent.getByRole('combobox').selectOption('');
+    await dependent.locator('summary').getByText('Codex · codex-test · 低', { exact: true }).waitFor();
+    await plan.locator(':scope > summary').click();
+    await page.fill('#sc-draft', '补充：请保留核对证据');
+    await page.getByRole('button', { name: '发送补充', exact: true }).click();
+    await page.locator('.sc-message-user').getByText('补充：请保留核对证据', { exact: true }).waitFor();
+    releaseSecondReview();
+    await page.waitForFunction(() => document.querySelectorAll('.sc-message-assistant').length >= 3);
+    await page.locator('.sc-run-progress').waitFor({ state: 'hidden' });
+    assert.match(await page.locator('.sc-transcript').innerText(), /读取并核对场景资料/, 'A new run keeps earlier exchanges in view');
+    const timeline = page.locator('.sc-message-assistant').last().locator('.sc-timeline');
+    await timeline.locator('summary').click();
+    await timeline.getByText('Owner 开始处理', { exact: true }).first().waitFor();
+    await timeline.getByText('Owner 已处理', { exact: true }).first().waitFor();
+    const reportDownload = page.waitForEvent('download');
+    await timeline.getByRole('button', { name: '导出 Markdown' }).click();
+    assert.match((await reportDownload).suggestedFilename(), /^协作时间线-.*\.md$/);
     await page.locator('[data-view="team"]').click();
     assert.equal(await page.locator('.sc-profile').count(), 2);
     await page.locator('[data-action="add-agent"]').click();
     assert.equal(await page.locator('.sc-profile').count(), 3);
     await page.locator('[data-action="save-team"]').click();
     await page.getByText('设置已保存，从下一轮生效', { exact: true }).waitFor();
+    await page.locator('[data-view="chat"]').click();
+    await page.locator('[data-action="compare-members"]').click();
+    await page.locator('#sc-collab-split').waitFor();
+    assert.equal(await page.locator('.sc-transcript:visible').count(), 2, 'Optional comparison keeps two independent transcripts');
+    await page.locator('#sc-collab-split').press('ArrowDown');
+    const savedComparisonWeights = await page.locator('.sc-thread-pane').evaluateAll(panes => panes.map(pane => pane.style.getPropertyValue('--sc-agent-weight')));
     await page.locator('[data-view="memory"]').click();
     await page.locator('.sc-memory-row').first().waitFor();
     await page.locator('[data-action="new-memory"]').click();
@@ -247,6 +340,49 @@ async function main() {
     await page.locator('[data-memory-field="content"]').fill('已修改，保留修订记录。');
     await page.locator('[data-action="save-memory"]').click();
     await page.getByText(/版本 v2/).waitFor();
+    await page.locator('[data-action="memory-history"]').click();
+    const historyPanel = page.locator('.sc-memory-history');
+    const revisedMemory = historyPanel.locator('li').filter({ hasText: '渲染检查记录' });
+    await revisedMemory.first().waitFor();
+    const memoryNumber = (await revisedMemory.first().locator('strong').textContent()).match(/^#\d+/)[0];
+    await historyPanel.getByLabel('按编号查找').fill(memoryNumber);
+    await historyPanel.getByRole('button', { name: '查找', exact: true }).click();
+    await revisedMemory.first().waitFor();
+    assert.equal(await historyPanel.locator('li').count(), 2, 'Stable memory number finds just that memory and both revisions');
+    await historyPanel.getByRole('button', { name: '清除筛选' }).click();
+    await historyPanel.locator('li').filter({ hasNotText: '渲染检查记录' }).first().waitFor();
+    await page.locator('.sc-memory-history [data-action="memory-source"]').first().click();
+    await page.locator('[data-view="chat"][aria-selected="true"]').waitFor();
+    const sourceText = '补充：请保留核对证据';
+    const sourceMessage = page.locator('.sc-message-user').filter({ hasText: sourceText });
+    const [sourceRunId, sourceMessageId] = await Promise.all([sourceMessage.getAttribute('data-run'), sourceMessage.getAttribute('data-message-id')]);
+    await sourceMessage.getByRole('button', { name: '存为记忆', exact: true }).click();
+    const draftSource = page.getByRole('region', { name: '记忆来源', exact: true });
+    await draftSource.getByText(sourceText, { exact: true }).waitFor();
+    await page.locator('[data-memory-field="title"]').fill('带精确消息来源的记忆');
+    await page.locator('[data-memory-field="content"]').fill('已保留核对过程的对应消息。');
+    if (screenshots) await page.locator('.sc-memory-detail').screenshot({ path: path.join(screenshots, 'workbench-memory-source.png') });
+    const linkedSave = page.waitForResponse(response => response.url() === `${sceneUrl}/memories` && response.request().method() === 'POST');
+    await page.locator('[data-action="save-memory"]').click();
+    const linkedMemory = await linkedSave;
+    assert.equal(linkedMemory.ok(), true);
+    const { memory: linked } = await linkedMemory.json();
+    assert.deepEqual([linked.origin.sessionId, linked.origin.runId, linked.origin.messageId, linked.origin.excerpt],
+      ['session-render-session', sourceRunId, sourceMessageId, sourceText]);
+    const provenance = page.locator('.sc-memory-history li').filter({ hasText: '带精确消息来源的记忆' });
+    await provenance.getByText('原消息摘录', { exact: true }).click();
+    assert.equal(await provenance.locator('blockquote').innerText(), sourceText);
+    if (screenshots) {
+      await historyPanel.getByLabel('按编号查找').fill(`#${linked.number}`);
+      await historyPanel.getByRole('button', { name: '查找', exact: true }).click();
+      await provenance.waitFor();
+      await historyPanel.getByRole('button', { name: '清除筛选', exact: true }).waitFor();
+      await historyPanel.locator('li').nth(1).waitFor({ state: 'hidden' });
+      if (!await provenance.locator('blockquote').isVisible()) await provenance.getByText('原消息摘录', { exact: true }).click();
+      await historyPanel.screenshot({ path: path.join(screenshots, 'workbench-memory-history.png') });
+    }
+    await provenance.locator('[data-action="memory-source"]').click();
+    await page.waitForFunction(id => document.activeElement?.dataset.messageId === id, sourceMessageId);
     await page.locator('[data-view="context"]').click();
     await page.locator('.sc-usage').waitFor();
     await page.selectOption('#sc-context-agent', 'codex');
@@ -288,17 +424,39 @@ async function main() {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${view} width ${width}`);
       }
     }
-    if (process.env.DSH_SMOKE_SCREENSHOTS) {
-      fs.mkdirSync(process.env.DSH_SMOKE_SCREENSHOTS, { recursive: true });
-      await page.screenshot({ path: path.join(process.env.DSH_SMOKE_SCREENSHOTS, 'workbench-context.png'), fullPage: true });
+    if (screenshots) {
+      await page.screenshot({ path: path.join(screenshots, 'workbench-context.png'), fullPage: true });
       await page.locator('[data-view="chat"]').click();
-      await page.screenshot({ path: path.join(process.env.DSH_SMOKE_SCREENSHOTS, 'workbench-chat.png'), fullPage: true });
+      await page.screenshot({ path: path.join(screenshots, 'workbench-chat.png'), fullPage: true });
     }
+    const historySession = 'session-render-session';
+    const historySetup = new ScenarioStore(path.join(temporary, 'codex-chat'));
+    try {
+      const { runs } = await (await page.request.get(`${sceneUrl}?session=${historySession}`)).json();
+      historySetup.transaction(() => {
+        for (let number = 1; number <= 101; number++) {
+          historySetup.event(testScene.id, runs[0].id, 'handoff.sent', { sessionId: historySession,
+            fromAgentId: 'deepseek', toAgentId: 'codex', delivery: 'assignment', text: `成员历史分页记录 ${number}` });
+        }
+        for (let number = 1; number <= 101; number++) {
+          historySetup.event(testScene.id, runs[0].id, 'owner.decision', { sessionId: historySession, text: `Owner 时间线记录 ${number}` });
+        }
+      });
+      const { events: global } = await (await page.request.get(`${sceneUrl}/collaboration?session=${historySession}`)).json();
+      assert.equal(global.at(-1).text, 'Owner 时间线记录 101');
+      assert.ok(global.every(event => event.type === 'owner.decision'));
+    } finally { historySetup.close(); }
     await page.reload();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     assert.match(await page.locator('.sc-heading').innerText(), /3 位成员/);
-    assert.deepEqual(await page.locator('.sc-agent').evaluateAll(panes => panes.map(pane => pane.style.getPropertyValue('--sc-agent-weight'))), savedMemberWeights,
-      'Refreshing restores the scene member height preferences');
+    await page.locator('#sc-collab-split').waitFor();
+    assert.deepEqual(await page.locator('.sc-thread-pane').evaluateAll(panes => panes.map(pane => pane.style.getPropertyValue('--sc-agent-weight'))), savedComparisonWeights,
+      'Refreshing restores the session comparison and pane sizes');
+    const memberHistory = page.locator('[data-agent-pane="codex"] .sc-transcript');
+    await memberHistory.getByText('成员历史分页记录 101', { exact: true }).waitFor();
+    assert.equal(await memberHistory.getByText('成员历史分页记录 1', { exact: true }).count(), 0);
+    await memberHistory.getByRole('button', { name: '读取较早消息' }).click();
+    await memberHistory.getByText('成员历史分页记录 1', { exact: true }).waitFor();
     await page.locator('[data-view="team"]').click();
     const extra = page.locator('[data-agent-field="engine"]').last();
     const extraId = await extra.getAttribute('data-agent');
@@ -307,7 +465,7 @@ async function main() {
     await page.locator(`[data-action="edit-member"][data-agent="${extraId}"]`).click();
     await extra.selectOption('agent');
     await page.locator(`[data-agent-field="agentProvider"][data-agent="${extraId}"]`).fill('test-agent');
-    await page.locator(`[data-agent-field="role"][data-agent="${extraId}"]`).click();
+    await page.locator(`details[data-detail="role-${extraId}"] > summary`).click();
     assert.equal(await page.locator(`[data-agent-field="model"][data-agent="${extraId}"]`).count(), 0);
     await page.locator('[data-action="save-team"]').click();
     await page.getByText('设置已保存，从下一轮生效', { exact: true }).waitFor();
@@ -367,6 +525,48 @@ async function main() {
     await page.reload();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
 
+    const sourceSetup = new ScenarioStore(path.join(temporary, 'codex-chat'));
+    try {
+      sourceSetup.transaction(() => {
+        for (let index = 0; index < 81; index++) {
+          sourceSetup.addMessage({ scenarioId: sceneId, sessionId: 'session-render-session', role: 'user',
+            text: `原会话的后续记录 ${index + 1}` });
+        }
+      });
+      const historical = sourceSetup.saveMemory({ scenarioId: sceneId, title: '历史任务定位检查', content: '核对已解绑的原任务。' },
+        undefined, { sessionId: 'session-render-session', runId: sourceRunId });
+      parents.delete(parent.id);
+      await page.getByRole('tab', { name: '记忆' }).click();
+      await page.locator('.sc-memory-row').filter({ hasText: historical.title }).click();
+      await page.locator('.sc-memory-detail [data-action="memory-source"]').click();
+      const savedSource = page.getByRole('dialog', { name: '历史会话来源' });
+      await savedSource.locator(`[data-message-id="${sourceMessageId}"]`).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get('dshSession'), 'session-created-1',
+        'A retained binding with no native session shows the saved transcript in place');
+      await savedSource.getByRole('button', { name: '关闭' }).click();
+      parents.set(parent.id, parent);
+      sourceSetup.unbindSession(sceneId, 'session-render-session', sourceSetup.scenario(sceneId).revision);
+      sourceSetup.saveMemory({ ...historical, content: '在新需求中核对已解绑的原任务。' }, historical.revision,
+        { sessionId: 'session-created-1' });
+      assert.equal(sourceSetup.memorySource(sceneId, { sessionId: 'session-render-session' })?.available, true,
+        'A detached session can still be opened if its saved messages remain');
+      assert.equal(sourceSetup.memorySource(sceneId, { sessionId: `local-${sceneId}` })?.available, true,
+        'The browser conversation can be used as a manual memory source');
+      await page.reload();
+      await page.getByRole('tab', { name: '记忆' }).click();
+      await page.locator('.sc-memory-row').filter({ hasText: historical.title }).click();
+      const detail = page.locator('.sc-memory-detail');
+      const firstOrigin = detail.locator('[data-action="memory-source"][data-session="session-render-session"]');
+      assert.equal(await detail.locator('[data-action="memory-source"][data-session="session-created-1"]').count(), 1,
+        'The newest edit keeps its own session without replacing the initial source');
+      await firstOrigin.click();
+      await savedSource.locator(`[data-message-id="${sourceMessageId}"]`).waitFor();
+      assert.equal(await savedSource.getByText('原会话的后续记录', { exact: false }).count(), 0,
+        'The detached source shows its original task after later messages exceed the history page');
+      await savedSource.getByRole('button', { name: '关闭' }).click();
+      await page.getByRole('tab', { name: '对话' }).click();
+    } finally { sourceSetup.close(); }
+
     const management = await (await page.request.post(`${origin}/codex-chat/v2/bootstrap`, {
       data: { create: true, cwd: temporary, sessionTitle: '会话管理检查' },
     })).json();
@@ -402,7 +602,6 @@ async function main() {
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     await page.locator('[data-action="scenes"]').first().click();
 
-    const { ScenarioStore } = await import(pathToFileURL(path.join(root, 'scenario-store.js')).href);
     const inspection = new ScenarioStore(path.join(temporary, 'codex-chat'));
     try {
       const stale = await page.request.delete(`${origin}/codex-chat/v2/scenarios/${otherId}`, { data: { revision: unbound.revision - 1 } });
@@ -426,6 +625,7 @@ async function main() {
     assert.deepEqual(errors, []);
     console.log('Render smoke passed, including per-scene session lists, cross-scene navigation, unbinding, deletion, and active-task protection.');
   } finally {
+    releaseSecondReview();
     releaseRefresh();
     await browser?.close();
     await workbench.dispose();

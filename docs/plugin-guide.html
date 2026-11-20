@@ -144,7 +144,7 @@
     <a href="#data">数据保存与恢复</a>
     <a href="#mac">迁移到 Mac</a>
     <a href="#quick-reference">问题速查</a>
-    <small>对应当前插件实现<br>2026 年 11 月 15 日<br>截图可点击放大</small>
+    <small>截图采集于 2026 年 11 月 15 日<br>截图可点击放大</small>
   </aside>
 
   <main>
@@ -153,7 +153,7 @@
       <h1>场景协作插件完整介绍与使用手册</h1>
       <p class="lead">围绕同一个场景配置 Codex、DSH 模型及其他 Agent，持续完成任务，查看每一步的输入和操作，并把可复用的知识留给后续任务。</p>
       <div class="actions"><button type="button" onclick="window.print()">打印或另存为 PDF</button><span class="meta">协作 · 上下文 · 记忆</span></div>
-      <p class="small">本手册对应 2026 年 11 月 15 日的源码实现。图中“真实记录”来自已有任务。“教学样例”使用实际界面加载预设数据，示例任务、文件、模型配置与命令输出均用于说明操作。所有截图可点击放大。</p>
+      <p class="small">截图采集于 2026 年 11 月 15 日和 19 日。“真实记录”来自已有任务，“教学样例”来自实际界面中的隔离测试数据。自动组队、协作时间线、双窗阅读和记忆溯源见 <a href="collaboration-and-memory.md">协作与记忆开发说明</a>。</p>
     </header>
 
     <section id="overview">
@@ -179,7 +179,7 @@
         <li>在 DSH 中进入本次需求的 Session，从右侧栏打开<strong>场景协作</strong>。首次进入时，选择创建新场景或绑定已有场景。</li>
         <li>打开<strong>团队</strong>，填写场景名称和<strong>场景目标与边界</strong>，通过<strong>选择文件夹</strong>设置工作区，也可手动修正路径。</li>
         <li>为 Codex 和 DeepSeek 设置职责、模型、思考强度与技能，然后点击<strong>保存设置</strong>。</li>
-        <li>返回<strong>对话</strong>，选择置信模式或统筹模式。统筹模式需要先选择 Owner。</li>
+        <li>返回<strong>对话</strong>，选择置信模式或统筹模式。统筹模式可自动组队；使用固定团队时，选择本轮 Owner。</li>
         <li>写下本轮目标、约束和完成标准，点击<strong>发送</strong>。需要长期保留的规则可以明确写“请记住”，也可以到记忆页手动新增。</li>
       </ol>
       <p>浏览器入口与 DSH 面板共用同一套界面。默认地址为 <code>http://127.0.0.1:18401/codex-chat</code>。实际端口可在 DSH 中通过 <code>/codex</code> 查询，也可以通过 <code>/codex open</code> 打开。使用 DeepSeek 成员时，需要通过 DSH 需求会话关联场景。内部 Session 编号由插件管理。</p>
@@ -251,22 +251,23 @@
 
       <section id="owner">
         <h3>1.3　统筹模式</h3>
-        <p>统筹模式由你选择一位 Owner 负责本轮任务。Owner 结合团队职责安排工作、收回成员结果，并检查交付，适合有多个步骤或明确分工的需求。</p>
+        <p>统筹模式由一位 Owner 负责本轮任务。Owner 结合团队职责安排工作、收回成员结果，并检查交付，适合有多个步骤或明确分工的需求。可以使用自动组队，或在固定团队中自己指定 Owner。</p>
         <ol>
           <li>在输入框底部选择<strong>统筹模式</strong>。</li>
-          <li>在<strong>由谁负责本次任务</strong>中选择 Owner。Codex 和 DeepSeek 都可以担任 Owner。</li>
+          <li>在<strong>团队</strong>中选择自动组队或固定团队。固定团队可以指定 Owner。Codex 和 DeepSeek 都可以担任 Owner。</li>
           <li>发送任务。Owner 先生成分工，包含负责人、任务说明、依赖关系和验收要求。</li>
-          <li>成员按分工处理并回报。对话右侧可展开<strong>本轮分工</strong>，查看负责人、执行状态和档位。</li>
+          <li>成员按分工处理并回报。对话右侧可展开<strong>本轮分工</strong>，查看负责人、原始指令、验收要求、等待原因、模型和思考强度。</li>
           <li>Owner 检查结果并简短汇报。需要继续修正时，可以安排一轮返工分工，再检查交付。</li>
         </ol>
         <figure><a href="images/plugin-02-owner-demo.png" target="_blank" rel="noopener"><img src="images/plugin-02-owner-demo.png" alt="统筹模式教学图，输入区选择 Codex 为 Owner，成员框显示 Owner 标识" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 3　输入区明确选择 Codex 负责，右侧成员标题也显示 Owner。主聊天中的最终汇报由 Owner 发出。</figcaption></figure>
-        <p>Owner 是本轮的统筹职责，成员仍使用各自配置的模型、角色和技能。Owner 可以分派给自己实现，也可以让其他成员先调研或审查。任务依赖会影响推进顺序，涉及同一工作区的写入阶段会串行调度。</p>
+        <p>Owner 是本轮的统筹职责。自动组队可在已接入的模型目录中按任务调整模型和强度。在成员设置里选择<strong>自动组队时沿用此成员的模型和强度</strong>，可保留指定档位。任务依赖会影响推进顺序，涉及同一工作区的写入阶段会串行调度。</p>
+        <p>右侧成员聊天持续追加当前会话中的交接和回报。主聊天回复下可以展开或导出<strong>协作时间线</strong>，查看 Owner 的排队、下发和处理记录。</p>
         <p>需要你提供信息时，主聊天会出现<strong>需要你补充</strong>的表单。填写后点击<strong>发送补充</strong>，任务继续推进。最终汇报默认要求简短，较长内容可以通过<strong>完整答复</strong>展开。</p>
         <div class="table-wrap"><table>
           <thead><tr><th>对比项</th><th>置信模式</th><th>统筹模式</th></tr></thead>
           <tbody>
             <tr><td>工作组织</td><td>成员独立处理，再交叉核对。</td><td>Owner 分工，成员交付，Owner 检查。</td></tr>
-            <tr><td>负责人设置</td><td>团队页指定汇总成员。</td><td>发送前选择 Owner。</td></tr>
+            <tr><td>负责人设置</td><td>团队页指定汇总成员。</td><td>自动组队复用场景配置，固定团队指定 Owner。</td></tr>
             <tr><td>主要查看位置</td><td>右侧成员的初步结果与审查意见。</td><td>对话右侧的本轮分工与成员交付。</td></tr>
             <tr><td>典型用途</td><td>事实核查、方案比较、交叉审查。</td><td>需求实现、多步骤处理、持续项目推进。</td></tr>
           </tbody>
@@ -276,6 +277,7 @@
       <section id="process">
         <h3>1.4　成员过程、尺寸调整与任务状态</h3>
         <p>发起任务后，工作区显示主聊天和成员过程。DSH 面板会自动展开工作区，也可以通过<strong>展开工作区 / 收回工作区</strong>调整显示范围。窄面板使用<strong>主聊天 / 成员过程</strong>切换视图。</p>
+        <p>输入框下方的状态条会随实际进度更新。转圈时可以看到正在分工、执行、交叉验证或汇总。等待你补充或审批时，到主聊天处理。等待计划时间时，状态条会显示预计可开始的时刻。刷新页面后仍能看到当前会话正在运行的任务，任务结束时进度提示消失。</p>
         <ul>
           <li><strong>左右宽度</strong>可以拖动主聊天和成员过程之间的竖向分隔条调整。</li>
           <li><strong>成员高度</strong>可以拖动展开成员框之间的横向分隔条调整，双击恢复均分。聚焦分隔条后也可用上下方向键调整。</li>
@@ -401,8 +403,8 @@
           <thead><tr><th>来源</th><th>保存方式与状态</th></tr></thead>
           <tbody>
             <tr><td>你明确要求记住</td><td>发送包含“请记住”“记下来”等明确表达的任务后，插件把整条消息作为场景约束保存为已确认，并关联原始消息。</td></tr>
-            <tr><td>你手动新增</td><td>到记忆页点击“新增记忆”，选择场景共享或具体角色，填写标题、类型、状态和内容后保存。</td></tr>
-            <tr><td>任务沉淀知识</td><td>成功任务的最终结果可以提出可复用知识，保存为待核实，关联任务和证据。是否新增取决于任务实际提出的知识。</td></tr>
+            <tr><td>你手动新增</td><td>在聊天消息旁点击“存为记忆”，可编辑内容并引用这条消息。也可在记忆页直接新增，默认关联当前会话。</td></tr>
+            <tr><td>整理会话</td><td>任务阶段、成功或失败收尾、上下文压缩及“整理本会话”会提取候选知识。保存为待核实，关联已保存的任务或消息证据。</td></tr>
             <tr><td>成员调用记忆工具</td><td>DeepSeek / DSH 成员可检索场景共享及自身角色记忆，通过 memory_write 保存发现。模型写入进入待核实，角色经验按所属角色保存。</td></tr>
             <tr><td>导入旧版共享资料</td><td>从旧版资料选择条目导入当前场景，导入后进入待核实并保留来源关联。</td></tr>
           </tbody>
@@ -417,6 +419,9 @@
             <tr><td>decision</td><td>决策</td><td>项目已选定的实现方案。</td></tr>
             <tr><td>preference</td><td>偏好</td><td>交付默认简短，详细过程按需展开。</td></tr>
             <tr><td>blocker</td><td>阻碍</td><td>某个依赖尚不可用，需要补充条件。</td></tr>
+            <tr><td>reference</td><td>参考案例</td><td>上一次类似需求的实现、验收或交接材料。</td></tr>
+            <tr><td>practice</td><td>有效做法</td><td>通过独立对账核验的交付步骤。</td></tr>
+            <tr><td>pitfall</td><td>踩坑与规避</td><td>盘外数据可以回查历史，盘中实时性需用开市后的连续数据核验。</td></tr>
             <tr><td>learning</td><td>经验知识</td><td>调研后形成、适合后续复用的结论。</td></tr>
             <tr><td>note</td><td>一般记录</td><td>其他需要在场景中保留的说明。</td></tr>
           </tbody>
@@ -429,13 +434,13 @@
           <thead><tr><th>状态</th><th>表示什么</th><th>当前采用规则</th></tr></thead>
           <tbody>
             <tr><td>已确认</td><td>已作为场景知识或规则确认。</td><td>启用采用后，参与后续任务的筛选。</td></tr>
-            <tr><td>待核实</td><td>需要结合来源进一步核对。</td><td>启用采用后，也可能被选入输入，材料带有状态。</td></tr>
-            <tr><td>存在冲突</td><td>新旧内容存在不同主张。</td><td>启用采用后，也可能参与筛选，需要结合来源处理分歧。</td></tr>
+            <tr><td>待核实</td><td>需要结合来源进一步核对。</td><td>核对和确认后才参与采用。</td></tr>
+            <tr><td>存在冲突</td><td>新旧内容存在不同主张。</td><td>对照来源处理分歧，确认可采用的版本。</td></tr>
             <tr><td>已过期、已归档</td><td>保留追溯，暂停当前复用。</td><td>自动选取及成员记忆检索均排除这些状态。</td></tr>
             <tr><td>已移除</td><td>条目已标记移除并停用。</td><td>排除后续采用，已有记录保留。</td></tr>
           </tbody>
         </table></div>
-        <div class="callout note"><strong>需要暂停某条知识时，关闭“后续请求采用”。</strong><p>当前实现允许已确认、待核实和存在冲突这三种启用条目参与检索。更改为待核实或存在冲突后，仍要核对采用开关。图 8 中的冲突样例已经关闭采用。</p></div>
+        <div class="callout note"><strong>已确认并启用的知识可以进入后续请求。</strong><p>需要暂停某条知识时，关闭“后续请求采用”。自动整理的记忆可以先查看原消息与证据，再确认其中适合跨需求复用的内容。</p></div>
         <p><strong>固定重要记忆</strong>会提高选取优先级。自动组装输入时，还会考虑任务关键词与记忆的关联程度，约束、偏好和决策也有较高优先级。默认记忆预算约为 2,400 个估算 Token，长条目可能被截取或暂不选入。</p>
         <p>因此，条目启用后仍需到上下文中确认本次是否实际采用。上下文会保存所用记忆的版本和采用原因，后续修订可以与历史请求分开追溯。</p>
       </section>
@@ -449,9 +454,12 @@
           <li>回到详情后，按需要调整<strong>后续请求采用</strong>和<strong>固定重要记忆</strong>。</li>
         </ol>
         <figure><a href="images/plugin-05-memory-edit-demo.png" target="_blank" rel="noopener"><img src="images/plugin-05-memory-edit-demo.png" alt="记忆编辑教学图，显示标题、类型、状态、内容和保存按钮" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 9　编辑“交付默认简短”的正文和状态。该编辑界面也用于把知识从待核实改为已确认，或标记为过期、归档。</figcaption></figure>
+        <figure><a href="images/plugin-10-memory-source-demo.png" target="_blank" rel="noopener"><img src="images/plugin-10-memory-source-demo.png" alt="从聊天保存记忆时，表单顶部显示来源消息，下方可编辑标题、分类和内容" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>从原消息点「存为记忆」后，先核对顶部引用，再填写适合下次复用的记忆正文。可以单独移除消息引用。</figcaption></figure>
         <p>条目每次保存都会形成新修订，采用与固定开关的更改也会增加版本。多人或多处同时编辑时，插件会核对版本，出现“资料已在另一处更新”时，刷新后重新核对再保存。</p>
         <figure><a href="images/plugin-06-memory-history-demo.png" target="_blank" rel="noopener"><img src="images/plugin-06-memory-history-demo.png" alt="修订历史教学图，展开 v1 显示旧正文和恢复此版本按钮" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>图 10　“修订历史”保留旧正文。展开某个版本后，可以点击“恢复此版本”。</figcaption></figure>
         <p>恢复旧版本会把所选版本的标题、内容、类型、状态和所属范围保存成一个新修订。采用与固定开关仍可在详情中单独核对。点击<strong>移除</strong>会把条目标记为已移除并关闭采用，历史修订和已保存的请求依据保留。</p>
+        <p>在<strong>记忆 → 写入历史</strong>输入条目编号，例如 <code>#32</code>，可以查看新增和修订的时间、触发方式、内容摘要及来源。股票场景中这条踩坑记忆取自「股票期货模拟场景智能体搭建」的行情调研回报。原消息在北京时间 02:53 保存，记忆在 03:12 写入。点击来源会话可定位到原消息。迁移到另一台电脑时，插件内的这些关联随场景数据库一起迁移。DSH 找不到原会话时，可在「历史会话来源」查看插件保留的原文。</p>
+        <figure><a href="images/plugin-11-memory-write-history-demo.png" target="_blank" rel="noopener"><img src="images/plugin-11-memory-write-history-demo.png" alt="记忆写入历史按编号查到一条记录，显示写入时间、原消息时间和打开原消息入口" loading="lazy"></a><figcaption><span class="tag demo">教学样例</span>输入 <code>#4</code> 查看这条记忆的写入方式、保存时间与原消息时间。展开摘录可预览，点击「打开原消息」跳回会话。</figcaption></figure>
       </section>
 
       <section id="memory-import">
@@ -506,7 +514,7 @@
 
     <section id="mac">
       <h2>迁移到 Mac</h2>
-      <p>源码发布在公开的 dsh-team-chat 仓库。Mac 可以通过 DSH 插件管理安装 Git 来源 <code>git+https://github.com/ybcbcc/dsh-team-chat.git#main</code>，也可以先克隆，再安装本地目录。<a href="https://github.com/ybcbcc/dsh-team-chat" target="_blank" rel="noopener">打开 GitHub 仓库</a></p>
+      <p>Mac 可以通过 DSH 插件管理安装 Git 来源 <code>git+https://github.com/ybcbcc/dsh-team-chat.git#main</code>，它读取已发布的版本。本地尚未同步的改动需随源码目录迁移，再在 Mac 上安装该目录。<a href="https://github.com/ybcbcc/dsh-team-chat" target="_blank" rel="noopener">打开 GitHub 仓库</a></p>
       <p>界面、协作逻辑与 SQLite 数据层可以共用源码。DSH 提供统一插件接口，实际目录、系统命令和 Codex 外部进程仍依赖当前操作系统。本次已补充系统 PATH、Homebrew 等常见 Node/Codex 路径发现，macOS 实机运行仍待验证。</p>
       <ol><li>在 Mac 安装相应版本的 DSH，并安装 Mac 对应架构的 Codex，完成当地的授权和模型配置。</li><li>通过 Git 同步插件源码，在 Mac 安装对应依赖及插件。</li><li>在团队页选择 Mac 项目目录，重新核对模型、技能和思考强度。</li><li>需要迁移知识时，先停止 DSH，再备份并复制 <code>~/.dsh/codex-chat/</code> 到 Mac。</li><li>在 Mac 新建需求会话，绑定迁移过来的场景。旧证据与附件路径保留原始记录，新任务需要提供 Mac 上可访问的文件与技能路径。</li></ol>
       <p>源码同步与场景数据迁移分别完成。Git 仓库用于代码，SQLite 保存知识和任务记录，账号授权在 Mac 当地配置。Windows 的 Junction 和已有二进制依赖需按 Mac 环境重新安装。</p>
@@ -518,7 +526,7 @@
         <thead><tr><th>你遇到的情况</th><th>查看或操作位置</th></tr></thead>
         <tbody>
           <tr><td>想改变某位成员的模型或职责</td><td>团队页修改并保存，下一轮生效。</td></tr>
-          <tr><td>统筹模式无法发送</td><td>核对输入区是否已选择 Owner，以及场景是否还有活动任务。</td></tr>
+          <tr><td>统筹模式无法发送</td><td>查看当前会话是否有任务正在运行。使用固定团队时，在团队设置里确认已选 Owner。自动组队可以由插件选择 Owner。</td></tr>
           <tr><td>DeepSeek 无法启动</td><td>在场景管理中核对当前需求会话的关联关系，以及 DSH 运行时是否可用。</td></tr>
           <tr><td>结论仍有争议</td><td>查看任务状态及成员审查意见，展开原始结果与证据。</td></tr>
           <tr><td>成员框太小或过程太长</td><td>拖动分隔条调整高度，在成员框内部滚动，或收起暂时不看的成员。</td></tr>

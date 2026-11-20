@@ -86,7 +86,8 @@ export function createRuntimeCapture({ store, request }) {
         engine: 'dsh', contextWindow: capacity, approximate, threadId: event.threadId,
         items, estimatedTokens: items.reduce((sum, item) => sum + item.estimatedTokens, 0), reportedUsage: data.usage,
         response: contentOf(message), status: 'completed', sourceCoverage: 'DSH 会话事件重建的模型请求输入。分类 Token 按文本估算。' })
-      request.onEvent('context.created', { contextId: context.id, stage: parent.stage, runtime: true })
+      request.onEvent('context.created', { contextId: context.id, stage: parent.stage, runtime: true,
+        ...(capacity && data.usage ? { usage: data.usage, contextWindow: capacity } : {}) })
     }
     if (event.type === 'assistant/message') append(event, 'assistant', data.message || data,
       { label: '助手回复', kinds: ((data.message || data).content || []).map(block => block.type) })

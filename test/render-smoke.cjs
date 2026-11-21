@@ -61,11 +61,11 @@ async function checkMemberResizing(page) {
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   await page.mouse.move(startX, startY + 40, { steps: 4 });
-  const runId = await page.locator('#sc-run').inputValue();
-  await page.selectOption('#sc-run', runId);
+  await page.locator('#sc-model-trigger').dispatchEvent('click');
   await page.waitForFunction(element => !element.isConnected, originalSeparator);
   await page.mouse.move(startX, startY + 80, { steps: 4 });
   await page.mouse.up();
+  await page.keyboard.press('Escape');
   const dragged = await heights();
   assert.ok(dragged[0] > before[0] + 60, 'Dragging increases the upper member height');
   assert.ok(dragged[1] < before[1] - 60, `Dragging releases height from the lower member ${JSON.stringify({ before, dragged })}`);
@@ -87,7 +87,7 @@ async function checkMemberResizing(page) {
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-render-smoke-'));
+  const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-render-smoke-')));
   const playwright = require(process.env.DSH_PLAYWRIGHT_MODULE || 'playwright');
   const { createWorkbenchHost } = await import(pathToFileURL(path.join(root, 'workbench-host.js')).href);
   const { ScenarioStore } = await import(pathToFileURL(path.join(root, 'scenario-store.js')).href);
@@ -133,9 +133,10 @@ async function main() {
     agents: { list: () => [...parents.values()], get: id => parents.get(id) },
     subagents: {
       getProvider: name => ['spawn', 'test-agent'].includes(name)
-        ? { name, capabilities: { agentOptions: name === 'spawn' } } : undefined,
+        ? { name, capabilities: { agentOptions: name === 'spawn' }, ...(name === 'spawn' ? { prepareContinuable() {} } : {}) } : undefined,
       startActivation: async request => {
       if (request.provider === 'test-agent') {
+        assert.equal(request.childId, undefined, 'External Agents receive no reserved child IDs');
         assert.equal(request.agentOptions, undefined, 'Fixed-model Agents receive no unsupported overrides');
         externalCalls++;
         return { childId: request.childId, dispose: async () => {},
@@ -195,6 +196,11 @@ async function main() {
         signal.throwIfAborted();
         hooks.onDelta('正在处理请求');
         hooks.onEvent('thread/tokenUsage/updated', { tokenUsage: { last: { inputTokens: 210, outputTokens: 50 } } });
+        const stage = prompt.match(/当前阶段为 ([^。]+)。/)?.[1];
+        if (stage === '独立处理' || stage === '交叉验证 1') {
+          hooks.onEvent('item/completed', { item: { id: 'command', type: 'commandExecution',
+            command: 'pwd', exitCode: 0, aggregatedOutput: `${stage}的命令结果` } });
+        }
         await new Promise((resolve, reject) => {
           const delay = setTimeout(resolve, 90);
           signal.addEventListener('abort', () => { clearTimeout(delay); reject(new Error('已取消')); }, { once: true });
@@ -236,12 +242,60 @@ async function main() {
     await page.goto(`${origin}/codex-chat?dshSession=render-session`);
     await page.locator('[data-action="new-scene"]').click();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+    const picker = page.getByRole('dialog', { name: '选择模型', exact: true });
+    const togglePicker = () => page.getByRole('button', { name: '选择模型', exact: true }).click();
+    const done = picker.getByRole('button', { name: '完成', exact: true });
+    await togglePicker();
+    await picker.locator('[data-model-effort="member:codex"]').selectOption('high');
+    await picker.locator('[data-model-effort="member:deepseek"]').selectOption('high');
+    await done.click();
     await page.fill('#sc-draft', '记住当前场景的输出需要简短');
     const firstRefresh = page.waitForResponse(response => /\/scenarios\/[^/?]+\?session=session-render-session$/.test(response.url()));
+    const firstSend = page.waitForResponse(response => response.request().method() === 'POST' && /\/runs$/.test(response.url()));
     await page.getByRole('button', { name: '发送', exact: true }).click();
+    assert.deepEqual((await (await firstSend).json()).run.agents.map(agent => agent.effort), ['high', 'high']);
     await page.locator('.sc-message-assistant').filter({ hasText: '工作区和团队协作流程已完成' }).waitFor();
     await (await firstRefresh).finished();
+    const members = page.getByRole('complementary', { name: '成员对话' });
+    const originalPane = await members.boundingBox();
+    await togglePicker();
+    await picker.locator('[data-model-choice="member:deepseek"]').uncheck();
+    assert.deepEqual(await members.boundingBox(), originalPane);
+    await picker.locator('[data-model-choice="member:codex"]').uncheck();
+    assert.deepEqual(await members.boundingBox(), originalPane);
+    assert.ok(await done.isDisabled());
+    await page.keyboard.press('Escape');
+    await togglePicker();
+    assert.equal(await picker.locator('[data-model-choice]:checked').count(), 2);
+    await picker.locator('[data-model-choice="member:deepseek"]').uncheck();
+    await done.click();
+    await members.waitFor({ state: 'hidden' });
+    await togglePicker();
+    await picker.getByRole('button', { name: '恢复默认' }).click();
+    await done.click();
+    await members.waitFor();
+    const layout = await page.locator('.sc-actions').evaluate(row => {
+      const bounds = selector => row.querySelector(selector).getBoundingClientRect();
+      const composer = row.closest('.sc-composer');
+      const arrow = bounds('.sc-send');
+      return { inner: composer.getBoundingClientRect().bottom - arrow.bottom,
+        outer: composer.closest('.sc-main').getBoundingClientRect().bottom - composer.getBoundingClientRect().bottom,
+        model: bounds('.sc-model-trigger').right, mode: bounds('.sc-model-mode').left, send: arrow.left,
+        arrowHeight: arrow.height, arrowCenter: arrow.top + arrow.height / 2,
+        controls: ['.sc-compose-attach', '.sc-model-trigger', '.sc-model-mode'].map(selector => {
+          const { height, top } = bounds(selector);
+          return { height, center: top + height / 2 };
+        }) };
+    });
+    assert.equal(layout.inner, 4);
+    assert.equal(layout.outer, 8);
+    assert.equal(layout.arrowHeight, 28);
+    assert.ok(layout.controls.every(control => control.height === 22 && control.center === layout.arrowCenter));
+    assert.ok(layout.mode - layout.model < 12 && layout.send - layout.mode < 90, 'Model and mode sit next to send');
+    assert.equal(await page.getByText('场景已保存到本机', { exact: true }).count(), 0);
     assert.equal(await page.locator('.sc-agent').count(), 2);
+    await page.locator('[data-agent-pane=codex] .sc-message-user').getByText('记住当前场景的输出需要简短', { exact: false }).waitFor();
+    assert.ok(await page.locator('[data-agent-pane=codex] .sc-message-assistant').count());
     await checkMemberScrolling(page);
     await page.setViewportSize({ width: 360, height: 900 });
     await page.locator('[data-action="mobile-process"]').click();
@@ -250,23 +304,33 @@ async function main() {
     const savedMemberWeights = await checkMemberResizing(page);
     await page.reload();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+    const codexPane = page.locator('[data-agent-pane="codex"]');
+    assert.equal(await codexPane.locator('summary').filter({ hasText: 'commandExecution' }).count(), 0);
+    for (const stage of ['独立处理', '交叉验证 1']) {
+      const answer = codexPane.locator('.sc-message-assistant').filter({ hasText: `Codex · ${stage}` });
+      await answer.getByText('查看原始结果与证据', { exact: true }).click();
+      await answer.getByText('命令执行 ·', { exact: false }).click();
+      await answer.getByText(`${stage}的命令结果`, { exact: true }).waitFor();
+      assert.equal(await answer.locator('summary').filter({ hasText: '命令执行 ·' }).count(), 1);
+    }
     assert.deepEqual(await page.locator('.sc-agent').evaluateAll(panes => panes.map(pane => pane.style.getPropertyValue('--sc-agent-weight'))), savedMemberWeights,
       'Refreshing restores the session member height preferences in confidence mode');
     await page.locator('[data-action="collapse"]').first().click();
     assert.equal(await page.locator('.sc-agent-body:visible').count(), 1);
     await page.locator('[data-action="process-toggle"]').click();
     assert.equal(await page.locator('.sc-processes').count(), 0);
-    await page.selectOption('#sc-mode', 'orchestration');
-    await page.waitForSelector('#sc-owner');
-    await page.selectOption('#sc-owner', 'deepseek');
-    await page.waitForTimeout(150);
+    const [testScene] = (await (await page.request.get(`${origin}/codex-chat/v2/scenarios`)).json()).scenes;
+    const sceneUrl = `${origin}/codex-chat/v2/scenarios/${testScene.id}`;
+    const { scene: beforeOrchestration } = await (await page.request.get(sceneUrl)).json();
+    assert.ok((await page.request.patch(sceneUrl, { data: {
+      revision: beforeOrchestration.revision, mode: 'orchestration', ownerId: 'deepseek',
+    } })).ok());
+    await page.locator('.sc-model-mode[data-mode=orchestration]').waitFor();
     await page.fill('#sc-draft', '请安排团队核对场景资料');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('.sc-message-assistant').length >= 2);
     await page.locator('.sc-collaboration .sc-transcript').getByText('读取并核对场景资料', { exact: false }).waitFor();
     assert.equal(await page.locator('.sc-thread-pane').count(), 1, 'Orchestration focuses one transcript by default');
-    const [testScene] = (await (await page.request.get(`${origin}/codex-chat/v2/scenarios`)).json()).scenes;
-    const sceneUrl = `${origin}/codex-chat/v2/scenarios/${testScene.id}`;
     const { scene: profileScene } = await (await page.request.get(sceneUrl)).json();
     const savedProfiles = await page.request.patch(sceneUrl, { data: {
       revision: profileScene.revision, teamStrategy: 'auto', agents: profileScene.agents.map(agent => agent.id === 'codex'
@@ -274,18 +338,24 @@ async function main() {
         : agent),
     } });
     assert.equal(savedProfiles.ok(), true);
-    await page.locator('.sc-owner').getByText('自动组队', { exact: true }).waitFor();
+    await page.locator('.sc-model-auto').getByText('自动组队', { exact: true }).waitFor();
     await page.fill('#sc-draft', '请让原成员再次核对当前需求');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.locator('.sc-collaboration .sc-transcript').getByText('读取并再次核对当前需求', { exact: false }).waitFor();
-    const progress = page.locator('.sc-run-progress[data-state="running"]');
+    const progress = page.locator('.sc-compose-submit .sc-run-progress[data-state="running"]');
+    const progressTrigger = progress.locator('summary');
+    await progressTrigger.hover();
     await progress.getByText('1 位成员执行中', { exact: true }).waitFor();
+    await progress.locator('li').filter({ hasText: 'Codex' }).getByText('执行中 ·', { exact: false }).waitFor();
+    await progress.locator('li').filter({ hasText: 'DeepSeek' }).getByText('阶段已完成', { exact: true }).waitFor();
+    assert.equal(await page.locator('.sc-footer .sc-run-progress').count(), 0);
     const mirror = await browser.newPage({ viewport: { width: 360, height: 900 } });
     try {
       await mirror.goto(`${origin}/codex-chat?dshSession=render-session`);
-      await mirror.locator('.sc-run-progress').getByText('1 位成员执行中', { exact: true }).waitFor();
+      await mirror.locator('#sc-progress-composer').waitFor();
       await mirror.locator('[data-action="mobile-process"]').click();
-      assert.equal(await mirror.locator('.sc-run-progress').isVisible(), true, 'Live progress stays visible next to the mobile process view');
+      await mirror.locator('#sc-progress-mobile').focus();
+      await mirror.locator('.sc-mobile-nav .sc-run-progress').getByText('1 位成员执行中', { exact: true }).waitFor();
     } finally { await mirror.close(); }
     const plan = page.locator('.sc-collab-plan');
     await plan.locator(':scope > summary').click();
@@ -309,6 +379,7 @@ async function main() {
     releaseSecondReview();
     await page.waitForFunction(() => document.querySelectorAll('.sc-message-assistant').length >= 3);
     await page.locator('.sc-run-progress').waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '发送', exact: true }).waitFor();
     assert.match(await page.locator('.sc-transcript').innerText(), /读取并核对场景资料/, 'A new run keeps earlier exchanges in view');
     const timeline = page.locator('.sc-message-assistant').last().locator('.sc-timeline');
     await timeline.locator('summary').click();
@@ -393,7 +464,9 @@ async function main() {
     await page.locator('.cx-dna-strip').waitFor();
     await page.locator('[data-cx="dna"]').click();
     await page.selectOption('#sc-context-agent', 'deepseek');
-    await page.locator('.cx-category-head[data-value="tools"]').click();
+    await page.locator('.cx-step-brief').filter({ hasText: '上报输入 300' }).waitFor();
+    const toolCategory = page.locator('.cx-category-head[data-value="tools"]');
+    if (await toolCategory.getAttribute('aria-expanded') !== 'true') await toolCategory.click();
     await page.locator('.cx-category-body .cx-item').first().click();
     await page.locator('.cx-schema').waitFor();
     assert.match(await page.locator('.cx-occupancy').innerText(), /128/);
@@ -470,7 +543,9 @@ async function main() {
     await page.locator('[data-action="save-team"]').click();
     await page.getByText('设置已保存，从下一轮生效', { exact: true }).waitFor();
     await page.locator('[data-view="chat"]').click();
-    await page.selectOption('#sc-mode', 'confidence');
+    const { scene: beforeConfidence } = await (await page.request.get(sceneUrl)).json();
+    assert.ok((await page.request.patch(sceneUrl, { data: { revision: beforeConfidence.revision, mode: 'confidence' } })).ok());
+    await page.locator('.sc-model-mode[data-mode=confidence]').waitFor();
 
     let refreshStarted;
     const refreshReady = new Promise(resolve => { refreshStarted = resolve; });
@@ -498,7 +573,9 @@ async function main() {
     await page.locator('[data-action="new-demand"]').first().click();
     await page.fill('#sc-new-session-title', '下一项独立需求');
     await page.locator('[data-action="create-demand"]').click();
-    await page.waitForURL('**dshSession=session-created-1**');
+    await page.waitForURL(new RegExp('dshSession=session-created-1'), { timeout: 8000 }).catch(async error => {
+      throw new Error(`${error.message}\nCurrent URL: ${page.url()}\n${(await page.locator('.sc-notice').allTextContents()).join('\n')}`, { cause: error });
+    });
     await page.locator('[data-action="send"]:enabled').waitFor();
     const delayedResponse = page.waitForResponse(response => oldRefresh.test(response.url()));
     releaseRefresh();
@@ -524,6 +601,48 @@ async function main() {
     });
     await page.reload();
     await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+
+    async function sendSelected(text) {
+      await done.click();
+      await page.fill('#sc-draft', text);
+      const response = page.waitForResponse(item => item.request().method() === 'POST' && item.url() === `${sceneUrl}/runs`);
+      await page.getByRole('button', { name: '发送', exact: true }).click();
+      const result = await (await response).json();
+      assert.ok(result.ok, result.error);
+      await page.locator(`.sc-log .sc-message-assistant[data-run="${result.run.id}"]`).waitFor();
+      await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+      return result.run;
+    }
+    await togglePicker();
+    const nativeModel = picker.getByRole('checkbox', { name: 'DSH test test', exact: true });
+    await nativeModel.waitFor();
+    const checkedKeys = await picker.locator('input[type=checkbox]:checked').evaluateAll(inputs => inputs.map(input => input.dataset.modelChoice));
+    for (const key of checkedKeys) await picker.locator(`input[data-model-choice=${JSON.stringify(key)}]`).uncheck();
+    await nativeModel.check();
+    const daily = await sendSelected('单模型日常模式验证');
+    assert.equal(daily.mode, 'daily');
+    assert.deepEqual(daily.agents.map(agent => [agent.model, agent.provider, agent.effort]), [['dsh-test', 'test', '']]);
+    await page.reload();
+    await page.locator('.sc-model-mode[data-mode=daily]').waitFor();
+    await togglePicker();
+    assert.ok(await nativeModel.isChecked(), 'Reload restores the demand-specific selection');
+    await picker.locator('input[data-model-choice="member:codex"]').check();
+    const confidence = await sendSelected('模型多选置信模式验证');
+    assert.equal(confidence.mode, 'confidence');
+    assert.equal(confidence.agents.length, 2);
+    assert.equal(confidence.agents[0].id, daily.agents[0].id, 'Models keep their identity across rounds');
+    await togglePicker();
+    await picker.getByRole('button', { name: '设为 Owner · DSH test · test' }).click();
+    await picker.getByRole('button', { name: '设为 Owner · Codex · codex-test' }).click();
+    assert.equal(await picker.locator('[data-action=star-model][aria-pressed=true]').count(), 1);
+    await picker.getByRole('button', { name: '设为 Owner · DSH test · test' }).click();
+    const orchestration = await sendSelected('点星统筹模式验证');
+    assert.equal(orchestration.mode, 'orchestration');
+    assert.equal(orchestration.ownerId, daily.agents[0].id);
+    assert.equal(orchestration.scene.teamStrategy, 'manual');
+    const { scene: afterSelection } = await (await page.request.get(sceneUrl)).json();
+    assert.equal(afterSelection.mode, 'confidence');
+    assert.ok(!afterSelection.agents.some(agent => agent.id === daily.agents[0].id), 'Per-demand choices do not rewrite the team');
 
     const sourceSetup = new ScenarioStore(path.join(temporary, 'codex-chat'));
     try {
@@ -632,7 +751,7 @@ async function main() {
     cleanups.forEach(cleanup => cleanup());
     await new Promise(resolve => server.close(resolve));
     const resolved = path.resolve(temporary);
-    if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(resolved).startsWith('dsh-render-smoke-')) fs.rmSync(resolved, { recursive: true, force: true });
+    if (resolved.startsWith(fs.realpathSync(os.tmpdir()) + path.sep) && path.basename(resolved).startsWith('dsh-render-smoke-')) fs.rmSync(resolved, { recursive: true, force: true });
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -653,3 +653,63 @@ test('Processed user directives survive unrelated reports and resume without rep
   const prompt = ownerCalls.find(call => call.kind === 'resume').prompt
   for (const text of [directive, planAnswer, engineAnswer]) assert.equal(prompt.split(text).length, 2)
 })
+
+test('Confidence members retain their own replies in the next question within one demand', async context => {
+  const calls = []
+  const { coordinator, scene, store } = fixture(context, request => {
+    calls.push(request)
+    return { answer: 'Final response.', summary: `Only ${request.agent.id} contributed this detail.`, verdict: 'approved' }
+  })
+  const confidence = store.saveScenario({ ...scene, mode: 'confidence', reviewRounds: 1, agents: scene.agents.slice(0, 2) })
+  const first = coordinator.start(confidence, { text: 'First question.', requestId: 'first', sessionId: 'local-same' })
+  await coordinator.active.get(first.id).promise
+  assert.equal(store.run(first.id).state, 'completed')
+  const second = coordinator.start(confidence, { text: 'Second question.', requestId: 'second', sessionId: 'local-same' })
+  await coordinator.active.get(second.id).promise
+  assert.equal(store.run(second.id).state, 'completed')
+  for (const call of calls.filter(call => call.run.id === second.id && call.stage === '独立处理')) {
+    assert.match(call.prompt, /First question\./)
+    assert.ok(call.prompt.includes(`Only ${call.agent.id} contributed this detail.`))
+    assert.ok(!call.prompt.includes(`Only ${call.agent.id === 'owner' ? 'worker' : 'owner'} contributed this detail.`))
+  }
+  const owner = store.memberMessages(scene.id, 'local-same').filter(message => message.agentId === 'owner')
+  assert.ok(owner.some(message => message.runId === first.id && message.role === 'relay' && message.text.includes('First question.')))
+  assert.ok(owner.some(message => message.runId === second.id && message.role === 'relay' && message.text.includes('Second question.')))
+  assert.ok(owner.some(message => message.stage === '交叉验证 1' && message.role === 'relay' && message.text.includes('worker')))
+  const isolated = coordinator.start(confidence, { text: 'Separate conversation.', requestId: 'isolated', sessionId: 'local-other' })
+  await coordinator.active.get(isolated.id).promise
+  const opening = calls.find(call => call.run.id === isolated.id && call.stage === '独立处理')
+  assert.doesNotMatch(opening.prompt, /First question\.|Second question\./)
+})
+
+test('Daily mode sends one plain conversation turn using the first member and model default', async context => {
+  const { coordinator, scene, store } = fixture(context, () => ({}))
+  const calls = []
+  coordinator.runAgent = async request => { calls.push(request); return { answer: 'One plain answer.' } }
+  const agents = [{ ...scene.agents[0], effort: 'high', variants: [{ id: 'higher', effort: 'max' }] }, ...scene.agents.slice(1)]
+  const daily = store.saveScenario({ ...scene, mode: 'daily', agents })
+  const first = submit(coordinator, daily, 'daily-default')
+  await first.done
+  assert.equal(store.run(first.id).finalResult, 'One plain answer.')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.id, agents[0].id)
+  assert.equal(calls[0].agent.effort, '')
+  assert.equal(calls[0].stage, '日常对话')
+  assert.doesNotMatch(calls[0].prompt, /只输出一个 JSON 对象/)
+  const adjusted = { ...daily, dailyEffort: { ...agents[0], effort: 'medium' } }
+  const next = submit(coordinator, adjusted, 'daily-adjusted')
+  await next.done
+  assert.equal(calls[1].agent.effort, 'medium')
+  assert.match(calls[1].prompt, /One plain answer\./)
+})
+
+test('Bulk import uses every available effort without duplicating an existing route', async () => {
+  const { bulkMembers } = await import('../workbench-views.js')
+  const catalog = { codex: Array.from({ length: 5 }, (_, index) => ({ id: `model-${index}`, efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] })),
+    dsh: [{ id: 'flash', provider: 'deepseek', efforts: ['off', 'low', 'high', 'max'] }] }
+  const all = bulkMembers([], catalog, { engine: 'codex', model: '' })
+  assert.equal(all.length, 30)
+  assert.equal(bulkMembers([], catalog, { engine: 'codex', model: '::model-2' }).length, 6)
+  assert.deepEqual(bulkMembers(all, catalog, { engine: 'codex', model: '' }), [])
+  assert.equal(bulkMembers([], catalog, { engine: 'dsh', model: 'deepseek::flash' }).length, 4)
+})

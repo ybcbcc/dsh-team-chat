@@ -19,7 +19,7 @@ const historyPage = () => ({ loaded: false, loading: false, hasOlder: false, bef
 
 export async function mountWorkbench(root, options = {}) {
   const { createContextDashboard } = await import(`./context-dashboard.js?v=${Date.now()}`)
-  const { renderTeamSettings, renderMemberPopover, memberModelName, effortLabel, renderMemoryPage, renderScenePicker, renderFolderPicker, renderSkillEditor, renderSkillViewer, renderSessionCreator, supportsMemberModel, profileOptions } = await import(`./workbench-views.js?v=${Date.now()}`)
+  const { renderTeamSettings, memberModelName, effortLabel, renderMemoryPage, renderScenePicker, renderFolderPicker, renderSkillEditor, renderSkillViewer, renderSessionCreator, supportsMemberModel, profileOptions, sameMemberRoute, bulkMembers, modelChoices, effortOptions, effortValues, selectedModelEffort } = await import(`./workbench-views.js?v=${Date.now()}`)
   const base = options.apiBase || '/codex-chat/v2'
   const lifetime = new AbortController()
   let source
@@ -36,6 +36,7 @@ export async function mountWorkbench(root, options = {}) {
   const memberWeights = new Map()
   const timelines = new Map()
   const memberHistories = new Map()
+  const memberEvidence = new Map()
   let collaboration = historyPage()
   let participantCatalog = new Map()
   let loadingInboxReplay = false
@@ -44,12 +45,13 @@ export async function mountWorkbench(root, options = {}) {
   let pendingSource
   let pendingSend
   const state = {
-    scene: undefined, runs: [], messages: [], sequence: 0, hasOlder: false, view: 'chat', draft: '', attachments: [],
+    modelSelection: undefined, modelDraft: undefined, modelFilter: '',
+    scene: undefined, runs: [], messages: [], sequence: 0, hasOlder: false, memberOlder: new Map(), bulk: { engine: 'codex', model: '' }, view: 'chat', draft: '', attachments: [],
     error: '', notice: '', busy: false, uploading: false, showProcesses: true, mobilePane: 'main', collapsed: new Set(),
     selectedRunId: '', streams: new Map(), drawer: false, scenes: [], sessions: [],
-    settings: undefined, settingsDirty: false, editingMembers: new Set(), skillViewer: undefined, memberPicker: false, quickMemberId: '', savingSettings: false, catalog: { codex: [], dsh: [], skills: [], errors: [] },
+    settings: undefined, settingsDirty: false, editingMembers: new Set(), skillViewer: undefined, savingSettings: false, catalog: { codex: [], dsh: [], skills: [], errors: [] },
     memories: [], memoryCount: 0, memoryId: '', memoryDraft: undefined, savingMemoryDraft: undefined, memoryScope: 'scenario', memoryQuery: '', revisions: [], questionAnswers: {},
-    events: [], sessionId: '', requiresBinding: false, memoryAudience: 'all', folderPicker: undefined, skillEditor: undefined,
+    sessionId: '', requiresBinding: false, memoryAudience: 'all', folderPicker: undefined, skillEditor: undefined,
     newSessionDraft: undefined, creatingSession: false,
     sceneAction: undefined, managingScene: false,
     processMembers: [], processScope: 'session', processCompact: false, exportingTimeline: '', sourceMessage: undefined, sourceViewer: undefined,
@@ -67,13 +69,13 @@ export async function mountWorkbench(root, options = {}) {
     } })
   root.classList.add('scw')
   root.setAttribute('aria-label', '场景协作工作区')
-  const composerResize = new ResizeObserver(positionMemberPopover)
+  const composerResize = new ResizeObserver(positionModelPicker)
   const resize = new ResizeObserver(entries => {
     const width = entries[0].contentRect.width
     root.classList.toggle('sc-narrow', width < 850)
     const compact = width < 540
     if (state.processCompact !== compact) { state.processCompact = compact; render() }
-    positionMemberPopover()
+    positionModelPicker()
   })
   resize.observe(root)
 
@@ -94,6 +96,63 @@ export async function mountWorkbench(root, options = {}) {
   function orchestrationView(run) { return run?.mode === 'orchestration' }
   function canFollowUp(run = activeRun()) { return run?.mode === 'orchestration' && Boolean(run.workflow) && run.state !== 'cancelling' }
   function automaticTeam() { return state.scene.teamStrategy === 'auto' }
+  function modelSelectionKey() { return `dsh-codex-chat.models.${state.scene.id}.${state.sessionId}` }
+  function composerModels(selection = state.modelSelection) {
+    const scene = state.scene
+    return selection || { keys: (scene.mode === 'daily' ? scene.agents.slice(0, 1) : scene.agents).map(agent => `member:${agent.id}`),
+      owner: scene.mode === 'orchestration' ? scene.ownerId : '' }
+  }
+  function composerMode(selection = composerModels()) {
+    if (!state.modelSelection) return state.scene.mode
+    return selection.keys.length === 0 ? '' : selection.keys.length === 1 ? 'daily' : selection.owner ? 'orchestration' : 'confidence'
+  }
+  function closeModelPicker(apply = false) {
+    if (apply) {
+      const draft = state.modelDraft
+      if (activeRun() || !composerModels(draft).keys.length) return
+      state.modelSelection = draft || undefined
+      try {
+        if (draft) localStorage.setItem(modelSelectionKey(), JSON.stringify(draft))
+        else localStorage.removeItem(modelSelectionKey())
+      } catch { /* Keep the current selection usable. */ }
+    }
+    state.modelDraft = undefined
+    render()
+    root.querySelector('#sc-model-trigger')?.focus()
+  }
+
+  function editModelDraft(selection, changes, effortChange) {
+    const legacyKey = selection.keys[0]
+    const efforts = selection.efforts || (selection.effort !== undefined ? { [legacyKey]: selection.effort } : {})
+    if (effortChange) changes.efforts = { ...efforts, ...effortChange }
+    state.modelDraft = { keys: selection.keys, owner: selection.owner, efforts, ...changes }
+    render()
+  }
+
+  function renderModelPicker(choices) {
+    const selection = composerModels(state.modelDraft)
+    const visible = choices.filter(choice => !state.modelFilter || choice.group === state.modelFilter)
+    return `<section class="sc-model-picker" role="dialog" aria-label="选择模型">
+      <div class="sc-section-head"><h3>选择模型 <small class="sc-muted">已选 ${selection.keys.length}</small></h3><button type="button" id="sc-close-models" data-action="close-models" aria-label="关闭模型列表">×</button></div>
+      <div class="sc-model-filters" aria-label="按接入方式筛选">${[['', '全部'], ['codex', 'Codex'], ['dsh', 'DeepSeek / DSH'], ['agent', 'Claude / Agent']].map(([id, label]) =>
+        `<button type="button" data-action="filter-models" data-group="${id}" data-focus="model-filter-${id}" aria-pressed="${id === state.modelFilter}">${label}</button>`).join('')}</div>
+      <div class="sc-model-list" data-scroll="model-picker-list">${visible.map(choice => {
+        const checked = selection.keys.includes(choice.key)
+        const owner = selection.owner === choice.key
+        const agent = choice.agent
+        const preference = state.scene.dailyEffort
+        const inherited = selection.keys.length === 1 && checked
+          ? (!state.modelDraft && preference?.id === agent.id && sameMemberRoute(preference, agent) ? preference.effort : '')
+          : agent.effort || ''
+        const effort = selectedModelEffort(selection, choice.key) ?? inherited
+        const canAdjust = supportsMemberModel(agent, state.catalog) && effortValues(agent, state.catalog, effort).length > 1
+        return `<div class="sc-model-row"><label><input type="checkbox" data-model-choice="${esc(choice.key)}" data-focus="${esc(`model-${choice.key}`)}" ${checked ? 'checked' : ''}><span><strong>${esc(choice.name)}</strong><small>${esc(choice.source)}</small></span></label>
+          ${canAdjust ? `<select class="sc-model-effort" aria-label="${esc(`思考强度 · ${choice.name} · ${choice.source}`)}" data-model-effort="${esc(choice.key)}" data-focus="${esc(`effort-${choice.key}`)}">${effortOptions(agent, state.catalog, effort)}</select>` : ''}
+          ${owner ? '<span class="sc-model-owner">Owner</span>' : ''}<button type="button" data-action="star-model" data-key="${esc(choice.key)}" data-focus="${esc(`star-${choice.key}`)}" aria-pressed="${owner}" aria-label="${esc(`${owner ? '取消' : '设为'} Owner · ${choice.name} · ${choice.source}`)}" ${selection.keys.length + Number(!checked) < 2 ? 'disabled' : ''}>${owner ? '★' : '☆'}</button></div>`
+      }).join('') || '<p class="sc-small sc-muted">当前没有可用模型。</p>'}</div>
+      <div class="sc-model-picker-footer"><small class="sc-muted">${selection.keys.length ? '选多个可交叉验证，点星指定统筹负责人' : '请至少勾选一个模型'}</small><div class="sc-model-filters">${state.modelDraft ? '<button type="button" data-action="reset-models">恢复默认</button>' : ''}<button type="button" data-action="apply-models" ${!selection.keys.length || activeRun() ? 'disabled' : ''}>完成</button></div></div>
+    </section>`
+  }
 
   function runProgress(run) {
     if (!run) return state.busy && pendingSend?.generation === sceneGeneration ? ['正在发送', 'running'] : []
@@ -116,6 +175,33 @@ export async function mountWorkbench(root, options = {}) {
     }
     return [{ independent: '成员独立思考中', reviewing: '成员交叉验证中', resolving: '成员补充核实中', working: '成员执行中',
       synthesizing: '正在汇总结论', checking: '正在审查结论' }[run.state] || '处理中', 'running']
+  }
+
+  function progressIndicator(run, location) {
+    const [progress, status] = runProgress(run)
+    if (!progress) return ''
+    const tasks = new Map()
+    for (const task of run?.tasks || []) {
+      if (tasks.get(task.agentId)?.state !== 'working' || task.state === 'working') tasks.set(task.agentId, task)
+    }
+    const questions = new Map(run?.questions?.map(question => [question.agentId, question]))
+    const queued = new Set(run?.delegations?.filter(task => task.state === 'pending').map(task => task.agentId))
+    const members = (run?.agents || []).map(agent => {
+      const task = tasks.get(agent.id)
+      const question = questions.get(agent.id)
+      let label = '等待开始'
+      if (question) label = question.kind === 'approval' ? '等待你审批' : '等待你补充'
+      else if (task?.state === 'working') label = task.workflowTaskId || /^执行/.test(task.title) ? '执行中' : '正在思考'
+      else if (queued.has(agent.id)) label = '等待执行'
+      else if (task) label = task.state === 'completed' ? '阶段已完成' : STATE_LABELS[task.state] || task.state
+      const stage = task?.state === 'working' ? task.title : ''
+      return `<li><strong>${esc(agent.name)}</strong><span>${esc([label, stage].filter(Boolean).join(' · '))}</span></li>`
+    }).join('')
+    const id = `sc-progress-${location}`
+    return `<div class="sc-run-progress" data-state="${status}">
+      <details data-detail="${id}"><summary class="sc-progress-trigger" id="${id}" aria-label="查看运行进度" aria-controls="${id}-panel" aria-describedby="${id}-status"><span aria-hidden="true"></span></summary></details>
+      <div class="sc-progress-panel" id="${id}-panel"><div class="sc-progress-card"><strong id="${id}-status">${esc(progress)}</strong>${members ? `<ul>${members}</ul>` : ''}</div></div>
+    </div>`
   }
 
   function layoutKey() { return `dsh-codex-chat.process-layout.${state.scene.id}.${state.sessionId}` }
@@ -382,6 +468,7 @@ export async function mountWorkbench(root, options = {}) {
     participantCatalog = new Map()
     timelines.clear()
     memberHistories.clear()
+    memberEvidence.clear()
     inboxReplayAfter = undefined
     loadingInboxReplay = false
     state.exportingTimeline = ''
@@ -389,7 +476,6 @@ export async function mountWorkbench(root, options = {}) {
     state.sourceViewer = undefined
     state.messages = []
     state.runs = []
-    state.events = []
     state.memoryDraft = undefined
     state.savingMemoryDraft = undefined
     state.memoryHistory = []
@@ -426,14 +512,20 @@ export async function mountWorkbench(root, options = {}) {
     state.sessionId = result.sessionId || options.sessionId || ''
     try { state.draft = localStorage.getItem(`dsh-codex-chat.draft.${state.sessionId}`) || '' } catch { state.draft = '' }
     state.scene = result.scene
+    state.modelSelection = undefined
+    state.modelDraft = undefined
+    state.modelFilter = ''
+    try {
+      const selection = JSON.parse(localStorage.getItem(modelSelectionKey()) || 'null')
+      if (Array.isArray(selection?.keys) && selection.keys.length) state.modelSelection = selection
+    } catch { /* Read the scene defaults when there is no saved selection. */ }
     loadProcessLayout()
     loadMemberWeights()
     state.settings = structuredClone(result.scene)
     state.editingMembers.clear()
     state.skillViewer = undefined
-    state.memberPicker = false
     state.messages = result.messages
-    state.events = result.events || []
+    state.memberOlder.clear()
     state.runs = result.runs
     state.sequence = result.sequence
     state.hasOlder = result.hasOlder
@@ -477,8 +569,6 @@ export async function mountWorkbench(root, options = {}) {
         if (data.sequence <= state.sequence) return
         state.sequence = data.sequence
         if (data.sessionId && data.sessionId !== state.sessionId && !['scenario.updated', 'memory.changed'].includes(data.type)) return
-        state.events.push(data)
-        if (state.events.length > 200) state.events.shift()
         captureCollaboration(data)
         if (data.type === 'agent.delta') {
           const previouslyStreaming = state.streams.has(data.operationId)
@@ -487,7 +577,7 @@ export async function mountWorkbench(root, options = {}) {
           state.streams.set(data.operationId, stream)
           const element = root.querySelector(`[data-stream="${data.operationId}"]`)
           if (element) {
-            const body = element.closest('.sc-agent-body')
+            const body = element.closest('.sc-agent-body, .sc-log')
             const follow = body && body.scrollHeight - body.scrollTop - body.clientHeight < 70
             element.textContent = stream.text
             if (follow) body.scrollTop = body.scrollHeight
@@ -525,7 +615,7 @@ export async function mountWorkbench(root, options = {}) {
           for (const [id, stream] of state.streams) if (stream.runId === data.runId) state.streams.delete(id)
           scheduleRefresh()
         }
-        render(data.type === 'message.added' && !data.message.agentId, data.type === 'handoff.sent')
+        render(data.type === 'message.added' && !data.message.agentId, data.type === 'handoff.sent' || (data.type === 'message.added' && Boolean(data.message.agentId)))
       } catch (error) { report(error) }
     }
     source.onerror = () => {
@@ -551,12 +641,14 @@ export async function mountWorkbench(root, options = {}) {
   }
 
   function saveScene(patch) {
-    patch = structuredClone(patch)
+    if (typeof patch !== 'function') patch = structuredClone(patch)
     const id = state.scene.id
     const generation = sceneGeneration
     const operation = saveQueue.then(async () => {
       if (state.scene?.id !== id) throw new Error('场景已切换，请在当前场景保存')
-      const result = await api(`/scenarios/${id}`, 'PATCH', { ...patch, revision: state.scene.revision })
+      const change = typeof patch === 'function' ? patch(state.scene) : patch
+      if (!change) return state.scene
+      const result = await api(`/scenarios/${id}`, 'PATCH', { ...change, revision: state.scene.revision })
       if (state.scene?.id === id && generation === sceneGeneration) {
         state.scene = result.scene
         if (!state.settingsDirty) state.settings = structuredClone(result.scene)
@@ -629,19 +721,22 @@ export async function mountWorkbench(root, options = {}) {
     if (state.busy || state.uploading || !state.scene) return
     const current = activeRun()
     if (current && (resumeRunId || !canFollowUp(current))) return
-    if (!current && state.scene.mode === 'orchestration' && !automaticTeam() && !state.scene.ownerId) {
+    const modelSelection = !current && !resumeRunId ? state.modelSelection : undefined
+    if (modelSelection && !modelSelection.keys.length) { state.error = '请至少选择一个模型'; render(); return }
+    if (!current && !resumeRunId && !modelSelection && state.scene.mode === 'orchestration' && !automaticTeam() && !state.scene.ownerId) {
       state.error = '请选择本次任务的 Owner'
       render()
-      root.querySelector('#sc-owner')?.focus()
+      root.querySelector('#sc-model-trigger')?.focus()
       return
     }
     state.busy = true
+    state.modelDraft = undefined
     state.error = ''
     const text = state.draft
     const sceneId = state.scene.id
     const sessionId = state.sessionId
     const generation = sceneGeneration
-    const fingerprint = JSON.stringify([sceneId, sessionId, text, state.attachments, current?.id, resumeRunId])
+    const fingerprint = JSON.stringify([sceneId, sessionId, text, state.attachments, current?.id, resumeRunId, modelSelection])
     if (pendingSend?.fingerprint !== fingerprint) pendingSend = { fingerprint, requestId: crypto.randomUUID() }
     pendingSend.generation = generation
     const { requestId } = pendingSend
@@ -649,7 +744,7 @@ export async function mountWorkbench(root, options = {}) {
     try {
       const result = current
         ? await api(`/runs/${current.id}/followups`, 'POST', { requestId, text })
-        : await api(`/scenarios/${sceneId}/runs`, 'POST', { requestId, text, attachments: state.attachments, resumeRunId, sessionId })
+        : await api(`/scenarios/${sceneId}/runs`, 'POST', { requestId, text, attachments: state.attachments, resumeRunId, sessionId, modelSelection })
       if (state.scene?.id !== sceneId || state.sessionId !== sessionId || generation !== sceneGeneration) return
       pendingSend = undefined
       if (result.run) {
@@ -880,8 +975,8 @@ export async function mountWorkbench(root, options = {}) {
     await loading
   }
 
-  function positionMemberPopover() {
-    const popup = root.querySelector('.sc-member-popover')
+  function positionModelPicker() {
+    const popup = root.querySelector('.sc-model-picker')
     if (!popup) return
     const composer = popup.closest('.sc-composer')
     const log = root.querySelector('.sc-log')
@@ -914,18 +1009,16 @@ export async function mountWorkbench(root, options = {}) {
       root.innerHTML = `<div class="sc-empty"><h2>场景协作</h2><p>${state.error ? esc(state.error) : '正在恢复场景与团队…'}</p>${state.error ? '<button type="button" data-action="retry-bootstrap">重试</button>' : ''}</div>`
       return
     }
-    const run = selectedRun()
-    const [progress, progressState] = runProgress(activeRun())
     const demandTitle = state.scene.sessions?.find(session => session.id === state.sessionId)?.title || options.sessionTitle || '未命名需求'
     root.innerHTML = `<header class="sc-top"><div class="sc-heading"><strong>${esc(state.scene.title)}</strong><span class="sc-small sc-muted">${state.scene.agents.length} 位成员 · 当前需求 · ${esc(demandTitle)}</span><span class="sc-small sc-muted sc-workspace-path">资料目录 · ${esc(state.scene.cwd)}</span></div><button type="button" data-action="new-demand">＋ 新建需求会话</button><button type="button" data-action="scenes">场景</button>${options.onExpand ? `<button type="button" data-action="expand">${options.isExpanded?.() ? '收回工作区' : '展开工作区'}</button>` : ''}</header>
-      <nav class="sc-nav" role="tablist" aria-label="场景功能">${Object.entries({ chat: '对话', team: '团队', memory: '记忆', context: '上下文' }).map(([view, label]) => `<button type="button" id="sc-tab-${view}" data-action="view" data-view="${view}" role="tab" aria-label="${label}" aria-controls="sc-content" aria-selected="${view === state.view}">${label}${view === 'memory' ? `<span class="sc-memory-count" aria-hidden="true">${state.memoryCount}</span>` : ''}</button>`).join('')}${state.view === 'chat' && run ? `<button type="button" class="sc-toggle" data-action="process-toggle">${state.showProcesses ? '收起过程' : '展开过程'}</button>` : ''}</nav>
+      <nav class="sc-nav" role="tablist" aria-label="场景功能">${Object.entries({ chat: '对话', team: '团队', memory: '记忆', context: '上下文' }).map(([view, label]) => `<button type="button" id="sc-tab-${view}" data-action="view" data-view="${view}" role="tab" aria-label="${label}" aria-controls="sc-content" aria-selected="${view === state.view}">${label}${view === 'memory' ? `<span class="sc-memory-count" aria-hidden="true">${state.memoryCount}</span>` : ''}</button>`).join('')}${state.view === 'chat' && (activeRun()?.mode || composerMode()) !== 'daily' && state.runs.some(item => item.mode !== 'daily') ? `<button type="button" class="sc-toggle" data-action="process-toggle">${state.showProcesses ? '收起过程' : '展开过程'}</button>` : ''}</nav>
       ${state.error || state.notice ? `<div class="sc-notice ${state.error ? 'error' : ''}" role="${state.error ? 'alert' : 'status'}"><span>${esc(state.error || state.notice)}</span><button type="button" class="sc-plain" data-action="dismiss" aria-label="关闭提示">×</button></div>` : ''}
       <div class="sc-content" id="sc-content" ${state.savingSettings ? 'inert aria-busy="true"' : ''} role="tabpanel" aria-labelledby="sc-tab-${state.view}">${state.view === 'chat' ? chatView() : state.view === 'team' ? teamView() : state.view === 'memory' ? memoryView() : contextView()}</div>
-      <footer class="sc-footer">${progress ? `<div class="sc-run-progress" role="status" data-state="${progressState}"><span aria-hidden="true"></span>${esc(progress)}</div>` : '<span>场景已保存到本机</span>'}<span class="sc-footer-directory" title="${esc(state.scene.cwd)}">${esc(state.scene.cwd)}</span></footer>${state.drawer ? drawerView() : ''}${state.folderPicker ? renderFolderPicker(state.folderPicker) : ''}${state.skillEditor ? renderSkillEditor(state.skillEditor) : ''}${state.skillViewer ? renderSkillViewer(state.skillViewer) : ''}${state.newSessionDraft ? renderSessionCreator(state.newSessionDraft, state.scene, state.creatingSession) : ''}${state.sourceViewer ? sourceViewer() : ''}`
+      ${state.drawer ? drawerView() : ''}${state.folderPicker ? renderFolderPicker(state.folderPicker) : ''}${state.skillEditor ? renderSkillEditor(state.skillEditor) : ''}${state.skillViewer ? renderSkillViewer(state.skillViewer) : ''}${state.newSessionDraft ? renderSessionCreator(state.newSessionDraft, state.scene, state.creatingSession) : ''}${state.sourceViewer ? sourceViewer() : ''}`
     composerResize.disconnect()
     const composer = root.querySelector('.sc-composer')
     if (composer) composerResize.observe(composer)
-    positionMemberPopover()
+    positionModelPicker()
     for (const detail of root.querySelectorAll('details')) {
       const key = detail.dataset.detail || detail.querySelector('summary')?.textContent
       if (detailStates.has(key)) detail.open = detailStates.get(key)
@@ -958,22 +1051,47 @@ export async function mountWorkbench(root, options = {}) {
   }
 
   function chatView() {
-    const run = selectedRun()
     const active = activeRun()
-    const split = run && state.showProcesses
-    const autoTeam = automaticTeam()
+    const run = [selectedRun(), ...state.runs].find(item => item && item.mode !== 'daily')
+    const selection = composerModels()
+    const mode = active?.mode || composerMode(selection)
+    const daily = mode === 'daily'
+    const split = run && !daily && state.showProcesses
+    const choices = modelChoices(state.scene.agents, state.catalog)
+    const selectedChoices = selection.keys.map(key => choices.find(choice => choice.key === key)).filter(Boolean)
+    const owner = choices.find(choice => choice.key === selection.owner)
+    const modeLabel = { daily: '日常模式', confidence: '置信模式', orchestration: '统筹模式' }[mode] || '未选模型'
     const followUp = canFollowUp(active)
+    const progress = progressIndicator(active, 'composer')
     const messages = state.messages.filter(message => !message.agentId)
-    return `${split ? `<div class="sc-mobile-nav"><button type="button" data-action="mobile-main" aria-pressed="${state.mobilePane === 'main'}">主聊天</button><button type="button" data-action="mobile-process" aria-pressed="${state.mobilePane === 'process'}">${orchestrationView(run) ? '协作消息' : `成员过程 · ${run.agents.length}`}</button></div>` : ''}
+    return `${split ? `<div class="sc-mobile-nav"><button type="button" data-action="mobile-main" aria-pressed="${state.mobilePane === 'main'}">主聊天</button><button type="button" data-action="mobile-process" aria-pressed="${state.mobilePane === 'process'}">${orchestrationView(run) ? '协作消息' : `成员过程 · ${run.agents.length}`}</button>${state.mobilePane === 'process' ? progressIndicator(active, 'mobile') : ''}</div>` : ''}
       <div class="sc-chat ${split ? 'sc-split' : ''}" data-mobile="${state.mobilePane}"><section class="sc-main" aria-label="主聊天"><div class="sc-log" data-scroll="main">
       ${state.hasOlder ? '<button type="button" class="sc-plain sc-small" data-action="older">更早的消息</button>' : ''}
       ${messages.length ? messages.map(messageView).join('') : `<div class="sc-empty"><h2>开始当前需求</h2><p>${state.memoryCount ? `本场景已保存 ${state.memoryCount} 条记忆，团队会按职责选用。` : '描述工作目标与约束，团队会逐步积累场景知识。'}</p>${state.memoryCount ? '<button type="button" class="sc-plain" data-action="view" data-view="memory">查看场景记忆</button>' : ''}</div>`}
+      ${daily && active ? [...state.streams.entries()].filter(([, stream]) => stream.runId === active.id).map(([id, stream]) => `<article class="sc-message sc-message-assistant"><div class="sc-message-label">${esc(active.agents[0].name)}</div><div class="sc-stream" data-stream="${id}">${esc(stream.text)}</div></article>`).join('') : ''}
       ${active ? `${questionsView(active)}${orchestrationView(active) ? timelineView(active.id, 'active') : ''}` : ''}
       ${run && ['interrupted', 'incomplete', 'failed', 'cancelled', 'disputed'].includes(run.state) && !active ? `<button type="button" data-action="resume" data-run="${run.id}">接续这项任务</button>` : ''}</div>
-      <div class="sc-composer">${state.memberPicker ? renderMemberPopover(state.settings || state.scene, state.catalog, state.quickMemberId, state.editingMembers, state.settingsDirty, state.savingSettings) : ''}${state.scene.mode === 'orchestration' ? `<div class="sc-owner"><label for="sc-owner">任务负责人</label><select id="sc-owner" aria-label="选择 Owner" ${active ? 'disabled' : ''}><option value="">${autoTeam ? '自动选择 Owner' : '请选择 Owner'}</option>${state.scene.agents.map(agent => `<option value="${agent.id}" ${agent.id === state.scene.ownerId ? 'selected' : ''}>${esc(agent.name)}</option>`).join('')}</select>${autoTeam ? '<span class="sc-muted">自动组队</span>' : ''}</div>` : ''}
+      <div class="sc-composer">${state.modelDraft !== undefined ? renderModelPicker(choices) : ''}
       ${state.attachments.length ? `<div class="sc-attachments">${state.attachments.map((file, index) => `<span class="sc-attachment">${esc(file.name)}<button type="button" data-action="remove-file" data-index="${index}" aria-label="移除 ${esc(file.name)}">×</button></span>`).join('')}</div>` : ''}
       <textarea id="sc-draft" aria-label="任务输入" placeholder="${followUp ? '补充信息或调整当前任务…' : '提出任务或继续这个场景…'}" ${state.busy ? 'disabled' : ''}>${esc(state.draft)}</textarea>
-      <div class="sc-actions"><input type="file" id="sc-files" multiple hidden><button type="button" data-action="attach" aria-label="添加附件" ${state.uploading || active ? 'disabled' : ''}>＋</button><select id="sc-mode" aria-label="协作模式" ${active ? 'disabled' : ''}><option value="confidence" ${state.scene.mode === 'confidence' ? 'selected' : ''}>置信模式</option><option value="orchestration" ${state.scene.mode === 'orchestration' ? 'selected' : ''}>统筹模式</option></select>${state.scene.agents.slice(0, 2).map(agent => `<button type="button" data-action="quick-members" data-agent="${agent.id}" aria-haspopup="dialog" aria-expanded="${state.memberPicker}"><span>${esc(agent.name)}</span><small>${esc(memberModelName(agent, state.catalog))} · ${esc(effortLabel(agent.effort || ''))}</small></button>`).join('')}${state.scene.agents.length > 2 ? `<button type="button" class="sc-plain" data-action="quick-members" aria-haspopup="dialog" aria-expanded="${state.memberPicker}">＋${state.scene.agents.length - 2} 位</button>` : ''}${active ? `<button type="button" class="sc-plain" data-action="stop" ${active.state === 'cancelling' ? 'disabled' : ''}>停止</button>` : ''}${!active || followUp ? `<button type="button" class="sc-send sc-primary" data-action="send" ${state.busy || state.uploading ? 'disabled' : ''}>${followUp ? '发送补充' : state.uploading ? '上传中' : '发送'}</button>` : ''}</div></div></section>${split ? `<div class="sc-separator" role="separator" aria-label="调整聊天区宽度" aria-orientation="vertical" tabindex="0"></div>${orchestrationView(run) ? collaborationView(run) : processView(run)}` : ''}</div>`
+      <div class="sc-actions">
+        <div class="sc-compose-tools">
+          <input type="file" id="sc-files" multiple hidden>
+          <button type="button" class="sc-compose-attach" data-action="attach" aria-label="添加附件" title="添加附件" ${state.uploading || active ? 'disabled' : ''}>＋</button>
+        </div>
+        <div class="sc-model-status">
+          <button type="button" id="sc-model-trigger" class="sc-model-trigger" data-action="choose-models" aria-label="选择模型" aria-haspopup="dialog" aria-expanded="${state.modelDraft !== undefined}" ${active || state.busy ? 'disabled' : ''}><span>${selectedChoices.length === 1 && selection.keys.length === 1 ? esc(selectedChoices[0].agent.id ? selectedChoices[0].source : selectedChoices[0].name) : selection.keys.length ? `${selection.keys.length} 个模型` : '选择模型'}</span></button>
+          ${mode === 'orchestration' && owner ? `<span class="sc-model-owner" title="${esc(owner.name)}">Owner · ${esc(owner.name)}</span>` : ''}
+          ${mode === 'orchestration' && !state.modelSelection && automaticTeam() ? '<span class="sc-small sc-muted sc-model-auto">自动组队</span>' : ''}
+          <span class="sc-model-mode" data-mode="${mode}">${modeLabel}</span>
+        </div>
+        <div class="sc-compose-submit">
+          ${active ? `<button type="button" class="sc-compose-stop" data-action="stop" ${active.state === 'cancelling' ? 'disabled' : ''}>停止</button>` : ''}
+          ${followUp ? `<button type="button" data-action="send" ${state.busy || state.uploading ? 'disabled' : ''}>发送补充</button>`
+            : !progress ? `<button type="button" class="sc-send sc-primary" data-action="send" aria-label="${state.uploading ? '上传中' : '发送'}" title="${state.uploading ? '上传中' : '发送'}" ${state.busy || state.uploading ? 'disabled' : ''}><span class="sc-send-arrow" aria-hidden="true"></span></button>` : ''}
+          ${progress}
+        </div>
+      </div></div></section>${split ? `<div class="sc-separator" role="separator" aria-label="调整聊天区宽度" aria-orientation="vertical" tabindex="0"></div>${orchestrationView(run) ? collaborationView(run) : processView(run)}` : ''}</div>`
   }
 
   function memoryDraftAction(messageId) {
@@ -1182,58 +1300,93 @@ export async function mountWorkbench(root, options = {}) {
     return `<aside class="sc-processes sc-collaboration" aria-label="协作消息"><div class="sc-process-head"><strong>协作消息</strong><div class="sc-collab-filters"><select id="sc-collab-scope" aria-label="消息范围"><option value="session" ${!selectedScope ? 'selected' : ''}>本会话</option><option value="run" ${selectedScope ? 'selected' : ''}>按任务筛选</option></select>${selectedScope ? `<select id="sc-run" aria-label="选择任务轮次">${state.runs.map(item => `<option value="${esc(item.id)}" ${item.id === run.id ? 'selected' : ''}>${esc(time(item.createdAt))} · ${esc(item.text.slice(0, 35))}</option>`).join('')}</select>` : ''}${!state.processCompact && available.length > 1 && !secondaryId ? `<button type="button" class="sc-plain" data-action="compare-members" data-agent="${esc(primaryId)}">对比两位</button>` : ''}</div></div>${plan}${run.error ? `<p class="sc-run-interruption sc-small">${esc(run.error)}</p>` : ''}<div class="sc-collab-member-list" data-scroll="collaboration-members" aria-label="选择成员">${available.map(member => `<button type="button" data-action="focus-participant" data-agent="${esc(member.id)}" data-focus="participant-${esc(member.id)}" aria-pressed="${member.id === primaryId}">${esc(member.name)}</button>`).join('')}</div><div class="sc-member-panes sc-thread-panes">${panes || '<p class="sc-transcript-empty sc-muted">等待 Owner 分配任务。</p>'}</div></aside>`
   }
 
-  function processView(run) {
-    let previousExpanded
-    const live = activeRun()?.id === run.id
-    const delegationState = task => run.state === 'failed' && task.state === 'failed'
-      && !run.tasks.some(stage => stage.agentId === task.agentId && stage.title === task.title) ? 'blocked' : task.state
-    const taskConfig = (task, agent) => {
-      const variantId = task.state === 'pending' && !task.profileSelected ? run.profileOverrides?.[agent?.id] ?? task.variantId : task.variantId
-      const variant = agent?.variants?.find(item => item.id === variantId)
-      const effort = task.state !== 'pending' && task.effort !== undefined ? task.effort : variant ? variant.effort : agent?.effort
-      return { variantId, label: `${memberModelName(agent || {}, state.catalog)} · ${effortLabel(effort || '')}${variant ? ` · ${variant.name}` : ''}` }
+  async function loadMemberEvidence(messageId) {
+    const generation = sceneGeneration
+    memberEvidence.set(messageId, {})
+    try {
+      const result = await api(`/scenarios/${state.scene.id}/member-messages/${messageId}/evidence?session=${encodeURIComponent(state.sessionId)}`)
+      if (generation === sceneGeneration) memberEvidence.set(messageId, { tools: result.tools })
+    } catch (error) {
+      if (generation === sceneGeneration) memberEvidence.set(messageId, { error: error.message })
     }
-    const taskInstruction = task => `<p class="sc-prose">${esc(task.instruction || '这条历史任务未保存下发指令。')}</p>${task.acceptanceCriteria ? `<p class="sc-small sc-prose"><strong>验收要求</strong> ${esc(typeof task.acceptanceCriteria === 'string' ? task.acceptanceCriteria : JSON.stringify(task.acceptanceCriteria))}</p>` : ''}${task.dependencies?.length ? `<p class="sc-small sc-muted">依赖 ${task.dependencies.map(id => esc(run.delegations.find(item => item.planTaskId === id)?.title || id)).join('、')}</p>` : ''}`
-    const assignments = run.delegations?.length ? `<details class="sc-assignments" data-detail="assignments-${run.id}" open><summary>Owner 本轮分工 · ${run.delegations.length} 项</summary><div>${run.delegations.map(task => {
-      const agent = run.agents.find(agent => agent.id === task.agentId)
-      const profile = taskConfig(task, agent)
-      return `<article><details data-detail="assignment-${run.id}-${task.id}"><summary>${badge(delegationState(task))} <strong>${esc(task.title)}</strong><span class="sc-assignment-config">${esc(agent?.name)} · ${esc(profile.label)}</span></summary>${taskInstruction(task)}</details>
-        ${live && task.state === 'pending' && agent?.variants?.length ? `<label>执行档位<select data-run-profile data-run="${run.id}" data-task="${task.id}" data-agent="${agent.id}">${profileOptions(agent, profile.variantId)}</select></label>` : ''}</article>`
-    }).join('')}</div></details>` : ''
-    return `<aside class="sc-processes" aria-label="成员处理过程"><div class="sc-process-head">${badge(run.state)}<select id="sc-run" aria-label="选择任务轮次">${state.runs.map(item => `<option value="${item.id}" ${run.id === item.id ? 'selected' : ''}>${esc(time(item.createdAt))} · ${esc(item.text.slice(0, 35))}</option>`).join('')}</select><button type="button" class="sc-plain" data-action="collapse-all">${run.agents.every(agent => state.collapsed.has(agent.id)) ? '展开全部' : '收起全部'}</button></div>
-      ${run.error ? `<p class="sc-run-interruption sc-small">任务在“${esc(run.tasks.find(task => task.state === 'failed')?.title || '执行阶段')}”中断。${esc(run.error)}。可在主聊天点击“接续这项任务”恢复处理。</p>` : ''}${assignments}<div class="sc-member-panes">${run.agents.map(agent => {
-        const messages = state.messages.filter(message => message.runId === run.id && message.agentId === agent.id)
-        const streams = [...state.streams.entries()].filter(([, stream]) => stream.agentId === agent.id && stream.runId === run.id)
-        const task = [...run.tasks].reverse().find(task => task.agentId === agent.id)
-        const tools = state.events.filter(event => event.runId === run.id && event.agentId === agent.id && event.type === 'tool.completed')
-        const collapsed = state.collapsed.has(agent.id)
-        const member = state.scene.agents.find(member => member.id === agent.id) || agent
-        const assigned = (run.delegations || []).filter(task => task.agentId === agent.id)
-        const profile = taskConfig(task || { state: 'pending' }, agent)
-        let separator = ''
-        if (!collapsed) {
-          if (previousExpanded) {
-            const percent = Math.round(memberWeight(previousExpanded.id) / (memberWeight(previousExpanded.id) + memberWeight(agent.id)) * 100)
-            separator = `<div class="sc-member-separator" id="sc-member-split-${previousExpanded.id}-${agent.id}" role="separator" tabindex="0" aria-orientation="horizontal" aria-label="调整 ${esc(previousExpanded.name)} 与 ${esc(agent.name)} 的高度" aria-controls="sc-body-${previousExpanded.id} sc-body-${agent.id}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-valuetext="上方 ${percent}%，下方 ${100 - percent}%" data-upper="${previousExpanded.id}" data-lower="${agent.id}" title="拖动调整高度，双击恢复均分"></div>`
-          }
-          previousExpanded = agent
-        }
-        return `${separator}<section class="sc-agent ${collapsed ? 'sc-collapsed' : ''}" data-agent-pane="${agent.id}" style="--sc-agent-weight:${memberWeight(agent.id)}"><header class="sc-agent-head"><div class="sc-agent-identity"><strong>${esc(agent.name)}</strong>${run.ownerId === agent.id && run.mode === 'orchestration' ? '<span class="sc-owner-mark">Owner</span>' : ''}<small title="${esc(profile.label)}">${esc(profile.label)}</small>${member.showRoleSummary && member.roleSummary ? `<span class="sc-agent-role-summary" title="${esc(member.roleSummary)}">${esc(member.roleSummary)}</span>` : ''}</div>${task ? badge(task.state === 'completed' ? 'stage_completed' : task.state) : ''}<button type="button" data-action="collapse" data-agent="${agent.id}" aria-expanded="${!collapsed}" aria-controls="sc-body-${agent.id}">${collapsed ? '展开' : '收起'}</button></header><div class="sc-agent-body" id="sc-body-${agent.id}" data-scroll="agent-${run.id}-${agent.id}" ${collapsed ? 'hidden' : ''}>
-          ${live && agent.variants?.length ? `<label class="sc-profile-selector">后续步骤的强度<select data-run-profile data-run="${run.id}" data-agent="${agent.id}">${profileOptions(agent, run.profileOverrides?.[agent.id])}</select></label>` : ''}
-          ${assigned.length ? `<section class="sc-agent-orders"><h3>Owner 下发的任务</h3>${assigned.map(order => `<article><strong>${esc(order.title)}</strong>${badge(delegationState(order))}<p class="sc-small sc-muted">${esc(taskConfig(order, agent).label)}</p>${taskInstruction(order)}</article>`).join('')}</section>` : !messages.length && !streams.length && !tools.length ? '<p class="sc-small sc-muted">等待任务分配</p>' : ''}
-          ${messages.map(message => `<div data-message-id="${esc(message.id)}" tabindex="-1"><div class="sc-message-label">${esc(message.stage)}${message.profileName ? `<span class="sc-small sc-muted"> · ${esc(message.profileName === '默认强度' ? '成员配置' : message.profileName)} · ${esc(effortLabel(message.effort || ''))}</span>` : ''}${message.error ? badge('failed') : ''}${memoryDraftAction(message.sessionId && message.id)}</div><div class="sc-prose">${prose(message.text)}</div>${message.raw ? `<details data-detail="message-${message.id}"><summary>查看原始结果与证据</summary><pre>${esc(message.raw)}</pre></details>` : ''}</div>`).join('')}
-          ${streams.map(([id, stream]) => `<div><span class="sc-muted">正在处理</span><div class="sc-stream" data-stream="${id}">${esc(stream.text)}</div></div>`).join('')}
-          ${task?.error ? `<p class="sc-prose">${esc(task.error)}</p>` : ''}
-          ${tools.map(tool => `<details data-detail="tool-${tool.sequence}"><summary>${esc(tool.tool)} · ${esc(time(tool.at))}</summary><pre>${esc(tool.text)}</pre></details>`).join('')}
-          <div class="sc-source"><button type="button" data-action="agent-context" data-agent="${agent.id}">查看实际采用的上下文</button></div>
-        </div></section>`
-      }).join('')}</div></aside>`
+    if (generation === sceneGeneration) render()
   }
 
+  function memberEvidenceView(message) {
+    const result = memberEvidence.get(message.id)
+    const tools = result?.tools?.map(tool => {
+      const name = tool.command || tool.tool === 'commandExecution' ? '命令执行' : tool.tool
+      const input = tool.command || (Object.keys(tool.arguments || {}).length ? JSON.stringify(tool.arguments, null, 2) : '')
+      const info = [tool.cwd, tool.exitCode != null ? `退出码 ${tool.exitCode}` : ''].filter(Boolean).join(' · ')
+      return `<details data-detail="member-tool-${esc(tool.id)}"><summary>${esc(name)} · ${esc(time(tool.at))}${tool.status === 'error' ? ' · 失败' : ''}</summary>
+        ${info ? `<div class="sc-small sc-muted">${esc(info)}</div>` : ''}${input ? `<pre>${esc(input)}</pre>` : ''}
+        <pre>${esc(tool.text || '无输出')}</pre></details>`
+    }).join('')
+    const records = result?.error
+      ? `<p class="sc-small" role="alert">${esc(result.error)} <button type="button" class="sc-plain" data-action="retry-member-evidence" data-message="${esc(message.id)}">重试</button></p>`
+      : result?.tools ? tools || '<p class="sc-small sc-muted">本次回复无已记录的工具结果。</p>'
+        : '<p class="sc-small sc-muted" role="status">正在读取工具记录…</p>'
+    return `<details data-detail="message-${esc(message.id)}" data-message-evidence="${esc(message.id)}">
+      <summary>查看原始结果与证据</summary>${message.raw ? `<pre>${esc(message.raw)}</pre>` : ''}${records}</details>`
+  }
+
+  function memberMessage(message, name, legacyRequest) {
+    const relay = message.role === 'relay'
+    const contents = message.text
+    const label = relay ? '协作调度' : name
+    return `${legacyRequest ? `<article class="sc-message sc-message-user"><div class="sc-message-label">协作调度 · ${esc(message.stage)}</div><div class="sc-prose">${prose(legacyRequest)}</div></article>` : ''}
+      <article class="sc-message ${relay ? 'sc-message-user' : 'sc-message-assistant'}" data-message-id="${esc(message.id)}" data-history-sequence="${message.seq}" tabindex="-1">
+        <div class="sc-message-label">${esc(label)} · ${esc(message.stage)}<span>${esc(time(message.at))}</span>${message.error ? badge('failed') : ''}${relay ? '' : memoryDraftAction(message.sessionId && message.id)}</div>
+        <div class="sc-prose">${prose(contents)}</div>${message.role === 'assistant' ? memberEvidenceView(message) : ''}
+      </article>`
+  }
+
+  function processView(run) {
+    let previousExpanded
+    const agents = run.scene?.composerSelection ? run.agents : [...new Map([...state.scene.agents, ...run.agents].map(agent => [agent.id, agent])).values()]
+    const crowded = agents.length > 4
+    const live = activeRun()?.id === run.id
+    const panes = agents.map(agent => {
+      const messages = state.messages.filter(message => message.agentId === agent.id)
+      const dispatches = new Set(messages.filter(message => message.role === 'relay').map(message => message.operationId))
+      const streams = [...state.streams.entries()].filter(([, stream]) => stream.agentId === agent.id)
+      const task = [...run.tasks].reverse().find(task => task.agentId === agent.id)
+      const collapsed = state.collapsed.has(agent.id)
+      const member = state.scene.agents.find(item => item.id === agent.id) || agent
+      const label = `${memberModelName(member, state.catalog)} · ${effortLabel(task?.effort ?? member.effort ?? '')}`
+      let separator = ''
+      if (!collapsed && !crowded) {
+        if (previousExpanded) {
+          const percent = Math.round(memberWeight(previousExpanded.id) / (memberWeight(previousExpanded.id) + memberWeight(agent.id)) * 100)
+          separator = `<div class="sc-member-separator" id="sc-member-split-${previousExpanded.id}-${agent.id}" role="separator" tabindex="0" aria-orientation="horizontal" aria-label="调整 ${esc(previousExpanded.name)} 与 ${esc(agent.name)} 的高度" aria-controls="sc-body-${previousExpanded.id} sc-body-${agent.id}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" data-upper="${previousExpanded.id}" data-lower="${agent.id}"></div>`
+        }
+        previousExpanded = agent
+      }
+      const older = state.memberOlder.get(agent.id) ?? messages.length >= 24
+      return `${separator}<section class="sc-agent ${collapsed ? 'sc-collapsed' : ''}" data-agent-pane="${agent.id}" style="--sc-agent-weight:${memberWeight(agent.id)}">
+        <header class="sc-agent-head"><div class="sc-agent-identity"><strong>${esc(member.name)}</strong><small>${esc(label)}</small>${member.showRoleSummary && member.roleSummary ? `<span class="sc-agent-role-summary" title="${esc(member.roleSummary)}">${esc(member.roleSummary)}</span>` : ''}</div>
+        ${task ? badge(task.state === 'completed' ? 'stage_completed' : task.state) : ''}<button type="button" data-action="collapse" data-agent="${agent.id}" aria-expanded="${!collapsed}" aria-controls="sc-body-${agent.id}">${collapsed ? '展开' : '收起'}</button></header>
+        <div class="sc-agent-body sc-transcript sc-confidence-transcript" id="sc-body-${agent.id}" data-scroll="agent-${esc(state.sessionId)}-${agent.id}" aria-label="与${esc(member.name)}的协作消息" ${collapsed ? 'hidden' : ''}>
+          ${older ? `<button type="button" class="sc-plain" data-action="member-older" data-agent="${agent.id}">读取较早消息</button>` : ''}
+          ${live && agent.variants?.length ? `<label class="sc-profile-selector">后续步骤的强度<select data-run-profile data-run="${run.id}" data-agent="${agent.id}">${profileOptions(agent, run.profileOverrides?.[agent.id])}</select></label>` : ''}
+          ${messages.map(message => {
+            const legacyRun = state.runs.find(item => item.id === message.runId)
+            const legacyRequest = legacyRun?.mode === 'confidence' && message.role === 'assistant' && !dispatches.has(message.operationId)
+              ? (message.stage === '独立处理' ? legacyRun.text : `请处理「${message.stage}」阶段。`) : ''
+            return memberMessage(message, message.agentName || member.name, legacyRequest)
+          }).join('')}
+          ${streams.map(([id, stream]) => `<article class="sc-message sc-message-assistant"><div class="sc-message-label">${esc(member.name)} · 正在回复</div><div class="sc-stream" data-stream="${id}">${esc(stream.text)}</div></article>`).join('')}
+          ${!messages.length && !streams.length ? '<p class="sc-small sc-muted">等待协作消息</p>' : ''}
+          ${task?.error ? `<p class="sc-prose">${esc(task.error)}</p>` : ''}
+          <div class="sc-source"><button type="button" data-action="agent-context" data-agent="${agent.id}">查看实际采用的上下文</button></div>
+        </div></section>`
+    }).join('')
+    return `<aside class="sc-processes" aria-label="成员对话"><div class="sc-process-head"><strong>本会话的成员对话</strong>${badge(run.state)}<button type="button" class="sc-plain" data-action="collapse-all">${agents.every(agent => state.collapsed.has(agent.id)) ? '展开全部' : '收起全部'}</button></div><div class="sc-member-panes ${crowded ? 'sc-many-members' : ''}" ${crowded ? 'data-scroll="confidence-members"' : ''}>${panes}</div></aside>`
+  }
 
   function teamView() {
     const title = options.sessionTitle || state.scene.sessions?.find(session => session.id === state.sessionId)?.title
-    return renderTeamSettings(state.settings || state.scene, state.catalog, title, state.editingMembers)
+    return renderTeamSettings(state.settings || state.scene, state.catalog, title, state.editingMembers, state.scene, state.bulk)
   }
 
   function memoryView() { return renderMemoryPage(state, { badge, prose, time: fullTime }) }
@@ -1252,6 +1405,8 @@ export async function mountWorkbench(root, options = {}) {
   const listen = (type, handler) => root.addEventListener(type, handler, { signal: lifetime.signal })
   root.addEventListener('toggle', resizeRoleEditors, { capture: true, signal: lifetime.signal })
   root.addEventListener('toggle', event => {
+    const messageId = event.target.dataset.messageEvidence
+    if (event.target.open && messageId && !memberEvidence.has(messageId)) loadMemberEvidence(messageId)
     const runId = event.target.dataset.timelineRun
     if (!runId || !event.target.open) return
     const history = timelines.get(runId)
@@ -1269,7 +1424,7 @@ export async function mountWorkbench(root, options = {}) {
   })
   listen('input', event => {
     const input = event.target
-    if (input.matches(':disabled') || (input.dataset.agent && !input.hasAttribute('data-run-profile') && !state.editingMembers.has(input.dataset.agent))) return
+    if (input.matches(':disabled') || (input.dataset.agent && !input.hasAttribute('data-run-profile') && !input.hasAttribute('data-effort-auto') && !state.editingMembers.has(input.dataset.agent))) return
     if (contextDashboard.input(input)) return
     if (input.id === 'sc-new-session-title') state.newSessionDraft.title = input.value
     if (input.dataset.skillField) state.skillEditor[input.dataset.skillField] = input.value
@@ -1287,11 +1442,13 @@ export async function mountWorkbench(root, options = {}) {
     if (input.dataset.setting) { state.settings[input.dataset.setting] = input.value; state.settingsDirty = true }
     if (input.hasAttribute('data-effort-slider')) {
       const agent = state.settings.agents.find(agent => agent.id === input.dataset.agent)
-      agent.effort = JSON.parse(input.dataset.efforts)[Number(input.value)] || ''
+      if (!input.hasAttribute('data-effort-auto')) {
+        agent.effort = JSON.parse(input.dataset.efforts)[Number(input.value)] || ''
+        state.settingsDirty = true
+      }
       const label = input.closest('.sc-effort-control').querySelector('.sc-effort-ticks').children[Number(input.value)].textContent
       input.closest('.sc-effort-control').querySelector('output').textContent = label
       input.setAttribute('aria-valuetext', label)
-      state.settingsDirty = true
     }
     if (input.dataset.agentField && ['INPUT', 'TEXTAREA'].includes(input.tagName)) {
       const agent = state.settings.agents.find(agent => agent.id === input.dataset.agent)
@@ -1308,8 +1465,23 @@ export async function mountWorkbench(root, options = {}) {
     const input = event.target
     if (input === openSelect) openSelect = undefined
     if (pendingRender) queueMicrotask(() => { if (pendingRender && !openSelect) render() })
-    if (input.matches(':disabled') || (input.dataset.agent && !input.hasAttribute('data-run-profile') && !state.editingMembers.has(input.dataset.agent))) return
+    if (input.matches(':disabled') || (input.dataset.agent && !input.hasAttribute('data-run-profile') && !input.hasAttribute('data-effort-auto') && !state.editingMembers.has(input.dataset.agent))) return
     const perform = async () => {
+      if (input.hasAttribute('data-effort-auto')) {
+        const member = state.scene.agents.find(agent => agent.id === input.dataset.agent)
+        const effort = JSON.parse(input.dataset.efforts)[Number(input.value)] || ''
+        const { id, engine, model, provider, agentProvider = '' } = member
+        const generation = sceneGeneration
+        const daily = input.dataset.effortAuto === 'daily'
+        const saved = await saveScene({ memberEffort: { id, engine, model, provider, agentProvider, effort, daily } })
+        if (generation !== sceneGeneration) return
+        const draft = state.settings?.agents.find(agent => agent.id === id)
+        if (!daily && sameMemberRoute(member, draft)) draft.effort = saved.agents.find(agent => agent.id === id).effort
+        state.notice = '思考强度已保存，下次发消息时生效'
+        return render()
+      }
+      if (input.id === 'sc-bulk-engine') { state.bulk = { engine: input.value, model: '' }; return render() }
+      if (input.id === 'sc-bulk-model') { state.bulk.model = input.value; return render() }
       if (input.dataset.routing) {
         const field = input.dataset.routing
         const policy = state.settings.routingPolicy ||= {}
@@ -1357,8 +1529,17 @@ export async function mountWorkbench(root, options = {}) {
         state.settingsDirty = true
         return render()
       }
-      if (input.id === 'sc-mode') return saveScene({ mode: input.value })
-      if (input.id === 'sc-owner') return saveScene({ ownerId: input.value })
+      if (input.dataset.modelChoice && !activeRun()) {
+        const selection = composerModels(state.modelDraft)
+        const key = input.dataset.modelChoice
+        const keys = input.checked ? [...new Set([...selection.keys, key])] : selection.keys.filter(item => item !== key)
+        if (keys.length > 128) { input.checked = false; throw new Error('最多选择 128 个模型') }
+        return editModelDraft(selection, { keys, owner: keys.length > 1 && keys.includes(selection.owner) ? selection.owner : '' })
+      }
+      if (input.dataset.modelEffort && !activeRun()) {
+        const selection = composerModels(state.modelDraft)
+        return editModelDraft(selection, {}, { [input.dataset.modelEffort]: input.value })
+      }
       if (input.id === 'sc-collab-scope') {
         state.processScope = input.value
         saveProcessLayout()
@@ -1378,7 +1559,6 @@ export async function mountWorkbench(root, options = {}) {
         mergeRun(result.run)
         loadMemberCollapses(result.run)
         mergeMessages(result.messages)
-        state.events = [...new Map([...state.events, ...(result.events || [])].map(item => [item.sequence, item])).values()].sort((first, second) => first.sequence - second.sequence).slice(-400)
         if (orchestrationView(result.run) && state.processScope === 'run') await loadCollaboration(result.run.id)
         return render()
       }
@@ -1412,7 +1592,7 @@ export async function mountWorkbench(root, options = {}) {
       if (input.dataset.setting) {
         state.settings[input.dataset.setting] = input.dataset.setting === 'reviewRounds' ? Number(input.value) : input.value
         state.settingsDirty = true
-        if (input.dataset.setting === 'teamStrategy') render()
+        if (['mode', 'teamStrategy'].includes(input.dataset.setting)) render()
       }
       if (input.id === 'sc-memory-scope') { state.memoryScope = input.value; state.memoryDraft = undefined; return loadMemories() }
       if (input.id === 'sc-memory-kind') { state.memoryKind = input.value; return render() }
@@ -1430,11 +1610,10 @@ export async function mountWorkbench(root, options = {}) {
   root.ownerDocument.addEventListener('keydown', event => {
     if (event.key === 'Escape' && openSelect) { openSelect = undefined; if (pendingRender) queueMicrotask(() => render()) }
     if (event.key === 'Escape' && state.sourceViewer) { event.preventDefault(); state.sourceViewer = undefined; render(); return }
-    if (event.key !== 'Escape' || !state.memberPicker) return
-    event.preventDefault()
-    state.memberPicker = false
-    render()
-    root.querySelector('[data-action="quick-members"]')?.focus()
+    if (event.key === 'Escape' && state.modelDraft !== undefined) {
+      event.preventDefault()
+      closeModelPicker()
+    }
   }, { signal: lifetime.signal })
   listen('keydown', event => {
     if (event.target.tagName === 'SELECT' && ['ArrowDown', 'ArrowUp', ' ', 'Enter'].includes(event.key)) openSelect = event.target
@@ -1568,16 +1747,30 @@ export async function mountWorkbench(root, options = {}) {
         return send(run.id)
       }
       if (action === 'attach') return root.querySelector('#sc-files').click()
+      if (action === 'retry-member-evidence') return loadMemberEvidence(button.dataset.message)
       if (action === 'remove-file') { state.attachments.splice(Number(button.dataset.index), 1); return render() }
-      if (action === 'quick-members') {
-        state.memberPicker = !state.memberPicker || Boolean(button.dataset.agent && button.dataset.agent !== state.quickMemberId)
-        state.quickMemberId = button.dataset.agent || state.quickMemberId || state.scene.agents[0].id
+      if (action === 'choose-models') {
+        if (state.modelDraft !== undefined) return closeModelPicker()
+        state.modelDraft = state.modelSelection || null
         render()
-        if (state.memberPicker) root.querySelector('.sc-member-popover [data-action="close-members"]')?.focus()
+        root.querySelector('#sc-close-models')?.focus()
         return loadCatalog()
       }
-      if (action === 'pick-quick-member') { state.quickMemberId = button.dataset.agent; return render() }
-      if (action === 'close-members') { state.memberPicker = false; return render() }
+      if (action === 'close-models' || action === 'apply-models') return closeModelPicker(action === 'apply-models')
+      if (action === 'filter-models') { state.modelFilter = button.dataset.group; return render() }
+      if (action === 'reset-models') {
+        state.modelDraft = null
+        render()
+        root.querySelector('#sc-close-models')?.focus()
+        return
+      }
+      if (action === 'star-model' && !activeRun()) {
+        const selection = composerModels(state.modelDraft)
+        const key = button.dataset.key
+        const keys = [...new Set([...selection.keys, key])]
+        if (keys.length > 128) throw new Error('最多选择 128 个模型')
+        return editModelDraft(selection, { keys, owner: key === selection.owner ? '' : key })
+      }
       if (action === 'team') return navigate('team')
       if (action === 'process-toggle') { state.showProcesses = !state.showProcesses; state.mobilePane = 'main'; return render() }
       if (action === 'mobile-main' || action === 'mobile-process') { state.mobilePane = action === 'mobile-main' ? 'main' : 'process'; return render() }
@@ -1627,13 +1820,24 @@ export async function mountWorkbench(root, options = {}) {
         return render()
       }
       if (action === 'collapse-all') {
-        const agents = selectedRun().agents
+        const agents = Array.from(root.querySelectorAll('[data-agent-pane]'), pane => ({ id: pane.dataset.agentPane }))
         state.collapsed = agents.every(agent => state.collapsed.has(agent.id)) ? new Set() : new Set(agents.map(agent => agent.id))
         saveMemberCollapses()
         return render()
       }
+      if (action === 'member-older') {
+        const id = button.dataset.agent
+        const before = state.messages.find(message => message.agentId === id)?.seq
+        if (!before) return
+        const generation = sceneGeneration
+        const result = await api(`/scenarios/${state.scene.id}/member-messages?agent=${encodeURIComponent(id)}&before=${before}&session=${encodeURIComponent(state.sessionId)}`)
+        if (generation !== sceneGeneration) return
+        mergeMessages(result.messages)
+        state.memberOlder.set(id, result.hasOlder)
+        return render()
+      }
       if (action === 'older') {
-        const before = state.messages[0]?.seq
+        const before = state.messages.find(message => !message.agentId)?.seq
         const result = await api(`/scenarios/${state.scene.id}?before=${before}&session=${encodeURIComponent(state.sessionId)}`)
         mergeMessages(result.messages)
         state.hasOlder = result.hasOlder
@@ -1743,6 +1947,20 @@ export async function mountWorkbench(root, options = {}) {
         state.settingsDirty = true
         state.skillEditor = undefined
         state.notice = '技能已加入成员，点击保存设置后应用'
+        return render()
+      }
+      if (action === 'bulk-members') {
+        const selection = { ...state.bulk }
+        const generation = sceneGeneration
+        let added = []
+        await saveScene(scene => {
+          added = bulkMembers(scene.agents, state.catalog, selection).map(agent => ({ ...agent, id: `agent-${crypto.randomUUID()}` }))
+          if (scene.agents.length + added.length > 128) throw new Error('团队最多容纳 128 位成员，请减少引入范围')
+          return added.length ? { agents: [...scene.agents, ...added] } : undefined
+        })
+        if (generation !== sceneGeneration) return
+        if (state.settingsDirty) state.settings.agents.push(...added)
+        state.notice = added.length ? `已引入 ${added.length} 位独立成员` : '所选模型的各个强度已在团队中'
         return render()
       }
       if (action === 'add-agent') {

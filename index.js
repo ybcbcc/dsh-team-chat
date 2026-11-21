@@ -120,7 +120,8 @@ function nodeExecutable() {
 /**
  * Locate Codex, in order of preference. The Host process may run without
  * `DSH_PROFILE_DIR`, so the profile is also searched under the usual home
- * location. System and desktop-app CLIs take precedence over the profile copy.
+ * location. On macOS, prefer the CLI bundled with ChatGPT so it can read the
+ * desktop application's current model cache.
  * @param override - explicit executable from the environment.
  * @returns `{ argv, env }` for the app-server child.
  */
@@ -128,6 +129,13 @@ function resolveLauncher(override) {
   if (typeof override === 'string' && override !== '') {
     log(`launcher explicit ${override}`)
     return { argv: [override, 'app-server', '--stdio'], env: process.env, source: `env:${override}` }
+  }
+  if (process.platform === 'darwin') {
+    const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'
+    if (existsSync(desktopCodex)) {
+      log(`launcher app cli ${desktopCodex}`)
+      return { argv: [desktopCodex, 'app-server', '--stdio'], env: process.env, source: `app:${desktopCodex}` }
+    }
   }
   const node = nodeExecutable()
   const systemCodex = executableOnPath('codex')

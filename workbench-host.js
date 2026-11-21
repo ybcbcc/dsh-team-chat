@@ -1,13 +1,14 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { join, relative, isAbsolute, dirname } from 'node:path'
 import { ScenarioStore, canonicalSessionId, conflict, MEMORY_KINDS, redactMemoryText } from './scenario-store.js'
 import { RunCoordinator } from './coordinator.js'
-import { contextInsights, createRuntimeCapture } from './context-insights.js'
+import { contextInsights, createRuntimeCapture, toolRecord } from './context-insights.js'
 import { createMemoryCompiler } from './memory-compiler.js'
 import { matchMember, normalizeRoutingPolicy, routeMember, taskCapability } from './model-routing.js'
+import { modelChoices, sameMemberRoute, selectedModelEffort } from './workbench-views.js'
 
 const READ_TOOLS = new Set([
   'read', 'read_image', 'read_file', 'read_files', 'glob', 'grep', 'ls', 'list_files', 'list_directory',
@@ -336,9 +337,10 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     const llm = optional.llm
     const provider = agentOptions.provider || backend?.agentRouteDefaults?.provider || parent.options?.provider
     const model = agentOptions.model || backend?.agentRouteDefaults?.model || parent.options?.model
-    if (canSelectModel && llm && provider && model && (request.agent.engine === 'dsh' || request.agent.provider || request.agent.model || request.agent.effort)) {
+    if (canSelectModel && llm && provider && model && (request.agent.engine === 'dsh' || request.agent.provider || request.agent.model || request.agent.effort || request.agent.composerEffort)) {
       const info = await llm.resolveModelInfo(provider, model, request.signal)
       const efforts = info.reasoning?.efforts?.map(effort => effort.id) || []
+      if ((request.run.mode === 'daily' || request.agent.composerEffort) && !request.agent.effort) agentOptions.reasoningEffort = info.reasoning?.defaultEffort
       if (agentOptions.reasoningEffort && !efforts.includes(agentOptions.reasoningEffort)) fail('所选模型不支持这个思考强度，请重新选择')
     }
     const child = { ...request, activation: undefined }
@@ -348,7 +350,9 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
     const stop = () => { if (activation) void activation.dispose().catch(error => log(`cancel child: ${error.message}`)) }
     request.signal.addEventListener('abort', stop, { once: true })
     try {
-      activation = await ctx.subagents.startActivation({ provider: providerName, childId, label: `${request.agent.name} · ${request.run.text.slice(0, 30)}`,
+      activation = await ctx.subagents.startActivation({ provider: providerName,
+        ...(typeof backend?.prepareContinuable === 'function' ? { childId } : {}),
+        label: `${request.agent.name} · ${request.run.text.slice(0, 30)}`,
         cwd: request.run.scene.cwd, prompt: [{ type: 'text', text: request.prompt }], parent,
         ...(Object.keys(agentOptions).length ? { agentOptions } : {}), signal: request.signal, delivery: 'caller' })
       child.activation = activation
@@ -376,10 +380,11 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
   function stateOf(id, before, sessionId = '') {
     const scene = sceneFor(id)
     id = scene.id
-    const messages = store.messages(id, before, 80, sessionId)
+    const main = store.messages(id, before, 81, sessionId, { mainOnly: true })
+    const messages = [...main.slice(-80), ...store.memberMessages(id, sessionId, before)].sort((a, b) => a.seq - b.seq)
     const runs = store.runs(id, 30, sessionId)
     return { scene, messages, runs, events: runs.length ? store.runEvents(runs[0].id) : [], sequence: store.lastSequence(id),
-      sessionId, hasOlder: messages.length === 80, memoryCount: store.memories(id).filter(entry => entry.status !== 'deleted').length }
+      sessionId, hasOlder: main.length > 80, memoryCount: store.memories(id).filter(entry => entry.status !== 'deleted').length }
   }
 
   function sceneSession(scene, sessionId, historical = false) {
@@ -452,7 +457,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       next.dshSessionId = canonicalSessionId(patch.dshSessionId)
     }
     if (patch.mode !== undefined) {
-      if (!['confidence', 'orchestration'].includes(patch.mode)) fail('协作模式无效')
+      if (!['confidence', 'orchestration', 'daily'].includes(patch.mode)) fail('协作模式无效')
       next.mode = patch.mode
     }
     if (patch.teamStrategy !== undefined) {
@@ -469,7 +474,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       next.reviewRounds = patch.reviewRounds
     }
     if (patch.agents !== undefined) {
-      if (!Array.isArray(patch.agents) || patch.agents.length < 1 || patch.agents.length > 64) fail('团队需要 1 至 64 位成员')
+      if (!Array.isArray(patch.agents) || patch.agents.length < 1 || patch.agents.length > 128) fail('团队需要 1 至 128 位成员')
       const ids = new Set()
       next.agents = patch.agents.map(agent => {
         if (!agent || typeof agent.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(agent.id) || ids.has(agent.id)) fail('成员编号缺失或重复')
@@ -507,6 +512,18 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
             effort: String(variant.effort || '').slice(0, 80), difficulty: variant.difficulty })),
           skills: Array.isArray(agent.skills) ? [...new Set(agent.skills.filter(name => typeof name === 'string').map(name => name.slice(0, 200)))].slice(0, 20) : [] }
       })
+    }
+    if (patch.memberEffort !== undefined) {
+      const { id, effort, engine, model, provider, agentProvider, daily } = patch.memberEffort || {}
+      const member = next.agents.find(item => item.id === id)
+      if (!member || member.engine !== engine || member.model !== model || member.provider !== provider
+        || (member.agentProvider || '') !== agentProvider) fail('成员的模型已变更，请刷新后调整强度', 409)
+      if (typeof effort !== 'string' || effort.length > 80) fail('思考强度无效')
+      if (member.engine === 'agent' && !ctx.subagents.getProvider?.(agentProvider)?.capabilities.agentOptions) fail('此 Agent 的强度由接入配置管理')
+      if (daily === true) {
+        if (next.agents[0].id !== id) fail('日常模式的首位成员已变更，请刷新', 409)
+        next.dailyEffort = { id, engine, model, provider, agentProvider, effort }
+      } else next.agents = next.agents.map(item => item.id === id ? { ...item, effort } : item)
     }
     if (patch.customSkills !== undefined) {
       if (!Array.isArray(patch.customSkills)) fail('自定义技能格式无效')
@@ -567,6 +584,37 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
       return backend ? { id: name, label: labels[name] || name, supportsModelOptions: Boolean(backend.capabilities.agentOptions),
         inheritsParentContext: Boolean(backend.inheritsParentContext), routeDefaults: backend.agentRouteDefaults } : undefined
     }).filter(Boolean)
+  }
+
+  async function selectedRunScene(scene, selection) {
+    if (!selection || !Array.isArray(selection.keys) || !selection.keys.length || selection.keys.length > 128
+      || selection.keys.some(key => typeof key !== 'string') || new Set(selection.keys).size !== selection.keys.length
+      || (selection.owner && (selection.keys.length < 2 || !selection.keys.includes(selection.owner)))) fail('请重新选择模型和 Owner')
+    const directory = selection.keys.some(key => !key.startsWith('member:')) ? await catalog(scene, false, false) : {}
+    const choices = new Map(modelChoices(scene.agents, directory).map(choice => [choice.key, choice]))
+    const agents = selection.keys.map(key => {
+      const choice = choices.get(key)
+      if (!choice) fail('选择的模型或成员当前不可用，请重新选择')
+      if (choice.agent.id) return choice.agent
+      const configured = scene.agents.find(agent => sameMemberRoute(agent, choice.agent))
+      if (configured && !selection.keys.includes(`member:${configured.id}`)) return { ...configured, effort: '' }
+      const id = `model-${createHash('sha256').update(key).digest('hex').slice(0, 28)}`
+      return { ...choice.agent, id, roleId: id, name: choice.name, role: '独立分析并核对答案',
+        effort: '', model: choice.agent.model || '', provider: choice.agent.provider || '', permission: 'default', variants: [], skills: [] }
+    }).map((agent, index) => {
+      const effort = selectedModelEffort(selection, selection.keys[index])
+      if (effort === undefined) return agent
+      if (typeof effort !== 'string' || effort.length > 80
+        || (effort && agent.engine === 'agent' && !ctx.subagents.getProvider?.(agent.agentProvider)?.capabilities.agentOptions)) {
+        fail('所选模型的思考强度无效，请重新选择')
+      }
+      return { ...agent, effort, composerEffort: true }
+    })
+    const mode = agents.length === 1 ? 'daily' : selection.owner ? 'orchestration' : 'confidence'
+    return { ...scene, agents, mode, composerSelection: true, teamStrategy: 'manual',
+      dailyEffort: mode === 'daily' && agents[0].composerEffort ? agents[0] : undefined,
+      ownerId: selection.owner ? agents[selection.keys.indexOf(selection.owner)].id : '',
+      summarizerId: agents.some(agent => agent.id === scene.summarizerId) ? scene.summarizerId : agents[0].id }
   }
 
   async function sceneWorkspace(scene) {
@@ -753,7 +801,7 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           const body = await readJsonBody(req)
           if (!Number.isInteger(body.revision)) fail('保存场景需要携带当前版本')
           const next = store.saveScenario(validateScene(scene, body), body.revision)
-          coordinator.syncProfiles(next)
+          if (body.agents !== undefined) coordinator.syncProfiles(next)
           const event = store.event(scene.id, null, 'scenario.updated', { scene: next })
           publish(event)
           writeJson(res, { ok: true, scene: next })
@@ -822,11 +870,17 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
           if (typeof body.requestId !== 'string' || !body.requestId || body.requestId.length > 100) fail('缺少本次发送标识')
           scene.cwd = checkCwd(scene.cwd)
           const attachments = validAttachments(scene, body.attachments)
-          if (scene.agents.some(agent => agent.engine !== 'codex') && attachments.some(file => file.kind === 'image')) {
+          const sessionId = sceneSession(scene, body.sessionId)
+          const previous = body.resumeRunId ? store.run(body.resumeRunId) : undefined
+          const runScene = previous?.scene?.composerSelection && previous.scenarioId === scene.id && previous.sessionId === sessionId
+            ? { ...scene, ...Object.fromEntries(['agents', 'mode', 'composerSelection', 'teamStrategy', 'dailyEffort', 'ownerId', 'summarizerId'].map(key => [key, previous.scene[key]])) }
+            : !body.resumeRunId && body.modelSelection !== undefined ? await selectedRunScene(scene, body.modelSelection) : scene
+          const mode = previous?.mode || runScene.mode
+          const participants = mode === 'daily' ? runScene.agents.slice(0, 1) : runScene.agents
+          if (participants.some(agent => agent.engine !== 'codex') && attachments.some(file => file.kind === 'image')) {
             fail('DSH 模型和外部 Agent 的图片任务当前需要文字说明或提取内容')
           }
-          const sessionId = sceneSession(scene, body.sessionId)
-          const run = coordinator.start(scene, { ...body, sessionId,
+          const run = coordinator.start(runScene, { ...body, sessionId,
             dshSessionId: sessionId.startsWith('local-') ? scene.dshSessionId || scene.sessions.at(-1)?.id : sessionId,
             text: body.text.trim(), attachments })
           if (scene.title === '新场景') {
@@ -841,6 +895,27 @@ export function createWorkbenchHost({ ctx, createChannel, resolveLauncher, defau
             detail: url.searchParams.get('detail'), before: Number(url.searchParams.get('before')) || undefined })
           if (!result) fail('上下文快照不存在', 404)
           writeJson(res, { ok: true, ...result })
+          return true
+        }
+        if (route[2] === 'member-messages' && route[4] === 'evidence' && route.length === 5 && req.method === 'GET') {
+          const sessionId = sceneSession(scene, url.searchParams.get('session'), true)
+          const message = store.message(route[3])
+          if (!message || message.scenarioId !== scene.id || message.sessionId !== sessionId || !message.agentId || message.role !== 'assistant') {
+            fail('成员回复不在当前会话', 404)
+          }
+          const tools = message.operationId ? store.contextEvents(scene.id, message.operationId)
+            .filter(event => event.type === 'tool.completed' && event.runId === message.runId && event.agentId === message.agentId)
+            .map(toolRecord).filter(Boolean) : []
+          writeJson(res, { ok: true, tools })
+          return true
+        }
+        if (route[2] === 'member-messages' && route.length === 3 && req.method === 'GET') {
+          const sessionId = sceneSession(scene, url.searchParams.get('session'), true)
+          const before = Number(url.searchParams.get('before')) || undefined
+          const agentId = url.searchParams.get('agent')
+          if (!agentId) fail('请选择成员')
+          const messages = store.messages(scene.id, before, 25, sessionId, { agentId })
+          writeJson(res, { ok: true, messages: messages.slice(-24), hasOlder: messages.length > 24 })
           return true
         }
         if (route[2] === 'contexts' && req.method === 'GET') {

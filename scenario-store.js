@@ -260,10 +260,22 @@ export class ScenarioStore {
     return { ...entry, seq: Number(result.lastInsertRowid) }
   }
 
-  messages(scenarioId, before, limit = 80, sessionId = '') {
+  messages(scenarioId, before, limit = 80, sessionId = '', { mainOnly = false, agentId } = {}) {
     return this.db.prepare(`SELECT seq, data FROM messages WHERE scenario_id = ? AND seq < ?
-      AND (? = '' OR json_extract(data, '$.sessionId') = ?) ORDER BY seq DESC LIMIT ?`)
-      .all(scenarioId, before || Number.MAX_SAFE_INTEGER, sessionId, sessionId, limit).reverse().map(row => ({ ...decode(row), seq: row.seq }))
+      AND (? = '' OR json_extract(data, '$.sessionId') = ?)
+      AND (? = 0 OR json_extract(data, '$.agentId') IS NULL)
+      AND (? IS NULL OR json_extract(data, '$.agentId') = ?) ORDER BY seq DESC LIMIT ?`)
+      .all(scenarioId, before || Number.MAX_SAFE_INTEGER, sessionId, sessionId, Number(mainOnly), agentId ?? null, agentId ?? null, limit)
+      .reverse().map(row => ({ ...decode(row), seq: row.seq }))
+  }
+
+  memberMessages(scenarioId, sessionId, before, limit = 24) {
+    return this.db.prepare(`SELECT seq, data FROM (
+      SELECT seq, data, row_number() OVER (PARTITION BY json_extract(data, '$.agentId') ORDER BY seq DESC) AS position
+      FROM messages WHERE scenario_id = ? AND seq < ? AND json_extract(data, '$.sessionId') = ?
+        AND json_extract(data, '$.agentId') IS NOT NULL
+    ) WHERE position <= ? ORDER BY seq`).all(scenarioId, before || Number.MAX_SAFE_INTEGER, sessionId, limit)
+      .map(row => ({ ...decode(row), seq: row.seq }))
   }
 
   runMessages(runId) {
@@ -278,14 +290,14 @@ export class ScenarioStore {
 
   memoryMessages(scenarioId, sessionId, { after = 0, through = Number.MAX_SAFE_INTEGER, limit = 24 } = {}) {
     return this.db.prepare(`SELECT seq, data FROM messages WHERE scenario_id = ? AND seq > ? AND seq <= ?
-      AND json_extract(data, '$.sessionId') = ? ORDER BY seq LIMIT ?`)
+      AND json_extract(data, '$.sessionId') = ? AND json_extract(data, '$.role') IS NOT 'relay' ORDER BY seq LIMIT ?`)
       .all(scenarioId, after, through, sessionId, limitBetween(limit, 24, 120))
       .map(row => ({ ...decode(row), seq: row.seq }))
   }
 
   lastMemoryMessage(scenarioId, sessionId) {
     return this.db.prepare(`SELECT COALESCE(MAX(seq), 0) AS seq FROM messages
-      WHERE scenario_id = ? AND json_extract(data, '$.sessionId') = ?`).get(scenarioId, sessionId).seq
+      WHERE scenario_id = ? AND json_extract(data, '$.sessionId') = ? AND json_extract(data, '$.role') IS NOT 'relay'`).get(scenarioId, sessionId).seq
   }
 
   event(scenarioId, runId, type, payload = {}) {

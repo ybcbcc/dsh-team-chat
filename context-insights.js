@@ -106,7 +106,7 @@ function parseArguments(value) {
   try { return JSON.parse(value) } catch { return { command: value } }
 }
 
-function toolRecord(event) {
+export function toolRecord(event) {
   if (['reasoning', 'userMessage', 'agentMessage', 'assistantMessage', 'subAgentActivity', 'plan'].includes(event.tool)) return undefined
   let item
   try { item = event.item || JSON.parse(event.text) } catch { item = {} }

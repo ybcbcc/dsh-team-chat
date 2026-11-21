@@ -54,15 +54,76 @@ export function memberModelName(agent, catalog) {
   return agent.model || (agent.engine === 'codex' ? catalog.codex?.find(model => model.isDefault)?.id : agent.engine === 'dsh' ? catalog.defaultDsh?.id : '') || '接入默认模型'
 }
 
-function modelControl(agent, catalog) {
-  const canSelectModel = supportsMemberModel(agent, catalog)
+function effortControl(agent, catalog, automatic) {
+  if (!supportsMemberModel(agent, catalog)) return ''
   const efforts = effortValues(agent, catalog)
   return `<div class="sc-effort-control">
-            ${canSelectModel ? `<output class="sc-effort-value" data-effort-label="${agent.id}">${escapeHtml(effortLabel(agent.effort || ''))}</output>
-            <label class="sc-effort-slider-label">思考强度<input type="range" min="0" max="${efforts.length - 1}" step="1" value="${Math.max(0, efforts.indexOf(agent.effort || ''))}" data-effort-slider data-efforts="${escapeHtml(JSON.stringify(efforts))}" data-agent="${agent.id}" data-focus="effort-${agent.id}" aria-valuetext="${escapeHtml(effortLabel(agent.effort || ''))}" ${efforts.length < 2 ? 'disabled' : ''}></label>
-            <div class="sc-effort-ticks" aria-hidden="true">${efforts.map(effort => `<span>${escapeHtml(effortLabel(effort))}</span>`).join('')}</div>
-            <select aria-label="模型" data-agent-field="model" data-agent="${agent.id}">${modelOptions(agent, catalog)}</select>` : '<p class="sc-small sc-muted">模型和强度沿用此 Agent 的 DSH 接入配置。</p>'}
-          </div>`
+    <output class="sc-effort-value" data-effort-label="${agent.id}">${escapeHtml(effortLabel(agent.effort || ''))}</output>
+    <label class="sc-effort-slider-label">思考强度<input type="range" min="0" max="${efforts.length - 1}" step="1" value="${Math.max(0, efforts.indexOf(agent.effort || ''))}" data-effort-slider ${automatic ? `data-effort-auto="${automatic === 'daily' ? 'daily' : 'member'}"` : ''} data-efforts="${escapeHtml(JSON.stringify(efforts))}" data-agent="${agent.id}" data-focus="effort-${agent.id}" aria-valuetext="${escapeHtml(effortLabel(agent.effort || ''))}" ${efforts.length < 2 ? 'disabled' : ''}></label>
+    <div class="sc-effort-ticks" aria-hidden="true">${efforts.map(effort => `<span>${escapeHtml(effortLabel(effort))}</span>`).join('')}</div>
+    ${automatic ? '<small class="sc-muted">调整后自动保存，下次发消息时生效。</small>' : ''}
+  </div>`
+}
+
+function modelControl(agent, catalog) {
+  return supportsMemberModel(agent, catalog)
+    ? `<label>模型<select aria-label="模型" data-agent-field="model" data-agent="${agent.id}">${modelOptions(agent, catalog)}</select></label>`
+    : '<p class="sc-small sc-muted">模型和强度沿用此 Agent 的 DSH 接入配置。</p>'
+}
+
+export function sameMemberRoute(a, b) {
+  return Boolean(a && b && ['engine', 'model', 'provider', 'agentProvider'].every(key => (a[key] || '') === (b[key] || '')))
+}
+
+export function selectedModelEffort(selection, key) {
+  if (selection.efforts && Object.hasOwn(selection.efforts, key)) return selection.efforts[key]
+  if (selection.keys.length === 1 && selection.keys[0] === key) return selection.effort
+}
+
+export function modelChoices(agents, catalog) {
+  const backendLabel = id => ({ 'claude-code': 'Claude Code · VPS', 'claude-code-ferry': 'Claude Code · 飞书文档接入' }[id]
+    || catalog.agentBackends?.find(item => item.id === id)?.label || id)
+  const base = agents.map(agent => ({
+    key: `member:${agent.id}`, name: agent.name, source: agent.engine === 'agent' ? backendLabel(agent.agentProvider) : memberModelName(agent, catalog),
+    group: agent.engine, agent,
+  }))
+  const models = ['codex', 'dsh'].flatMap(engine => (catalog[engine] || []).map(model => ({
+    key: JSON.stringify([engine, model.provider || '', model.id]), name: model.label || model.id,
+    source: engine === 'codex' ? 'Codex' : model.provider, group: engine,
+    agent: { engine, model: model.id, provider: model.provider || '' },
+  })))
+  const backends = (catalog.agentBackends || []).filter(backend => !['spawn', 'fork'].includes(backend.id)).map(backend => ({
+    key: JSON.stringify(['agent', '', backend.id]), name: backendLabel(backend.id), source: backend.routeDefaults?.model || '接入默认模型', group: 'agent',
+    agent: { engine: 'agent', agentProvider: backend.id },
+  }))
+  return [...base, ...models, ...backends]
+}
+
+export function bulkMembers(roster, catalog, { engine, model }) {
+  const routes = new Set(roster.map(agent => JSON.stringify([agent.engine, agent.provider || '', agent.model || '', agent.effort || ''])))
+  return (catalog[engine] || []).flatMap(item => {
+    const provider = item.provider || ''
+    if (model && model !== `${provider}::${item.id}`) return []
+    return [...new Set(item.efforts?.length ? item.efforts : [''])].flatMap(effort => {
+      const route = JSON.stringify([engine, provider, item.id, effort])
+      if (routes.has(route)) return []
+      routes.add(route)
+      return [{ name: `${item.label || item.id} · ${effortLabel(effort)}`, engine, model: item.id, provider, effort,
+        role: '独立分析并核对答案', routeLocked: true, skills: [], variants: [] }]
+    })
+  })
+}
+
+function bulkControl(roster, catalog, bulk) {
+  const pending = bulkMembers(roster, catalog, bulk).length
+  return `<div class="sc-fields sc-bulk">
+    <label>接入方式<select id="sc-bulk-engine"><option value="codex" ${bulk.engine === 'codex' ? 'selected' : ''}>Codex</option><option value="dsh" ${bulk.engine === 'dsh' ? 'selected' : ''}>DSH 模型供应商</option></select></label>
+    <label>批量引入的模型<select id="sc-bulk-model"><option value="">全部模型</option>${(catalog[bulk.engine] || []).map(model => {
+      const key = `${model.provider || ''}::${model.id}`
+      return `<option value="${escapeHtml(key)}" ${bulk.model === key ? 'selected' : ''}>${escapeHtml(model.label || model.id)}${model.provider ? ` · ${escapeHtml(model.provider)}` : ''}</option>`
+    }).join('')}</select></label>
+    <button type="button" class="sc-primary" data-action="bulk-members" ${pending === 0 ? 'disabled' : ''}>一键引入${pending ? ` ${pending} 位成员` : ''}</button>
+  </div>`
 }
 
 function permissionControl(agent, catalog) {
@@ -76,18 +137,6 @@ function permissionControl(agent, catalog) {
     ? ({ default: '可写工作区，额外权限由自动审核处理。', approve: '额外权限申请会显示在主聊天，由你允许或拒绝。', full: '执行阶段可访问工作区外文件和网络，操作无需逐项审批。', 'read-only': '仅允许读取和调研。' }[agent.permission || 'default'])
     : agent.engine === 'dsh' ? 'DSH 宿主权限继续生效。操作审批用于工具执行前的人工确认，只读会限制操作工具。' : '权限由该 Agent 接入插件配置。'
   return `<label>执行权限<select data-agent-field="permission" data-agent="${agent.id}">${choices.map(([value, label]) => `<option value="${value}" ${value === (agent.permission || 'default') ? 'selected' : ''}>${label}</option>`).join('')}</select><span class="sc-small sc-muted">${escapeHtml(description)}</span></label><p class="sc-small sc-muted">调研与审查阶段按只读要求执行，权限调整用于下一轮任务。</p>`
-}
-
-export function renderMemberPopover(scene, catalog, selectedId, editingMembers, dirty, saving) {
-  const agent = scene.agents.find(agent => agent.id === selectedId) || scene.agents[0]
-  const editing = editingMembers.has(agent.id)
-  return `<section class="sc-member-popover" role="dialog" aria-label="成员快捷设置">
-    <div class="sc-section-head"><h3>成员快捷设置</h3><button type="button" class="sc-plain" data-action="close-members" aria-label="关闭成员快捷设置">×</button></div>
-    <div class="sc-member-list" data-scroll="quick-members">${scene.agents.map(member => `<button type="button" data-action="pick-quick-member" data-agent="${member.id}" aria-pressed="${member.id === agent.id}"><strong>${escapeHtml(member.name)}</strong><span>${escapeHtml(memberModelName(member, catalog))} · ${escapeHtml(effortLabel(member.effort || ''))}</span></button>`).join('')}</div>
-    <div class="sc-member-quick-body" data-scroll="quick-body"><div class="sc-profile-actions"><strong>${escapeHtml(agent.name)}</strong><button type="button" data-action="edit-member" data-agent="${agent.id}" ${saving ? 'disabled' : ''}>${editing ? '完成编辑' : '编辑'}</button></div>
-    <fieldset ${editing && !saving ? '' : 'disabled'}>${modelControl(agent, catalog)}${permissionControl(agent, catalog)}</fieldset></div>
-    <div class="sc-quick-save"><span class="sc-small sc-muted">${dirty ? '有尚未保存的设置' : '已保存'} · 模型与权限用于下一轮</span><button type="button" class="sc-primary" data-action="save-team" ${saving || !dirty ? 'disabled' : ''}>${saving ? '保存中…' : '保存设置'}</button></div>
-  </section>`
 }
 
 function memberSkills(agent, skills, editing) {
@@ -134,7 +183,7 @@ function orchestrationSettings(scene, catalog) {
   </div>`
 }
 
-export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMembers = new Set()) {
+export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMembers = new Set(), saved = scene, bulk = { engine: 'codex', model: '' }) {
   const agents = scene.agents
   const skills = [...catalog.skills.filter(skill => !skill.custom), ...(scene.customSkills || []).map(skill => ({ ...skill, name: `custom:${skill.id}`, label: skill.name, custom: true }))]
   // Keep selected skills visible even when their source is temporarily unavailable.
@@ -155,8 +204,9 @@ export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMem
           <fieldset ${disabled}><label>过程窗口的简短职责<input data-agent-field="roleSummary" data-agent="${agent.id}" data-focus="${agent.id}-role-summary" maxlength="120" value="${escapeHtml(agent.roleSummary || '')}" placeholder="例如：实现与维护"></label><label class="sc-check"><input type="checkbox" data-agent-flag="showRoleSummary" data-agent="${agent.id}" ${agent.showRoleSummary ? 'checked' : ''}>在过程标题显示简短职责</label></fieldset>
           <details class="sc-role-description" data-detail="role-${agent.id}"><summary>展开完整职责</summary>${editing ? `<textarea class="sc-role-editor" data-auto-grow aria-label="完整职责" data-agent-field="role" data-agent="${agent.id}" data-focus="${agent.id}-role">${escapeHtml(agent.role)}</textarea>` : `<p class="sc-prose">${escapeHtml(agent.role)}</p>`}</details>
         </section>
-        <section class="sc-member-section"><h3>模型</h3><fieldset ${disabled}>
-          ${modelControl(agent, catalog)}
+        <section class="sc-member-section"><h3>模型</h3>
+          ${sameMemberRoute(agent, saved.agents.find(item => item.id === agent.id)) ? effortControl(agent, catalog, true) : editing ? effortControl(agent, catalog, false) : ''}
+          <fieldset ${disabled}>${modelControl(agent, catalog)}
           ${permissionControl(agent, catalog)}
           <label>接入方式<select data-agent-field="engine" data-agent="${agent.id}"><option value="codex" ${agent.engine === 'codex' ? 'selected' : ''}>Codex 直接接入</option><option value="dsh" ${agent.engine === 'dsh' ? 'selected' : ''}>DSH 模型供应商</option><option value="agent" ${agent.engine === 'agent' ? 'selected' : ''}>其他 Agent · DSH 接入</option></select></label>
           ${agent.engine === 'agent' ? `<label>Agent 接入<input data-agent-field="agentProvider" data-agent="${agent.id}" data-focus="${agent.id}-backend" list="sc-agent-backends" value="${escapeHtml(agent.agentProvider || '')}"></label>` : ''}
@@ -174,6 +224,7 @@ export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMem
     <div class="sc-section-head"><h2>团队与场景设置</h2></div>
     <div class="sc-fields">
       <label>场景名称<input data-setting="title" data-focus="title" value="${escapeHtml(scene.title)}"></label>
+      <label>场景默认模式<select data-setting="mode">${[['daily', '日常模式'], ['confidence', '置信模式'], ['orchestration', '统筹模式']].map(([value, label]) => `<option value="${value}" ${scene.mode === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
       <label>工作区<div class="sc-input-action"><input data-setting="cwd" data-focus="cwd" value="${escapeHtml(scene.cwd)}"><button type="button" data-action="pick-folder">选择文件夹</button></div></label>
       <label class="sc-full">场景目标与边界<textarea data-setting="brief" data-focus="brief">${escapeHtml(scene.brief)}</textarea></label>
     </div>
@@ -181,11 +232,12 @@ export function renderTeamSettings(scene, catalog, sessionTitle = '', editingMem
     ${scene.mode === 'confidence' ? `<div class="sc-mode-settings sc-fields">
       <label>交叉验证轮数<input type="number" min="0" step="1" data-setting="reviewRounds" value="${scene.reviewRounds}"><span class="sc-small sc-muted">每轮互审后补充核实。0 表示持续验证，直到一致或你停止。</span></label>
       <label>统一结论由谁汇总<select data-setting="summarizerId">${agents.map(agent => `<option value="${agent.id}" ${agent.id === scene.summarizerId ? 'selected' : ''}>${escapeHtml(agent.name)}</option>`).join('')}</select></label>
-    </div>` : orchestrationSettings(scene, catalog)}
+    </div>` : scene.mode === 'orchestration' ? orchestrationSettings(scene, catalog) : `<p class="sc-small sc-muted">日常模式由 ${escapeHtml(agents[0]?.name || '第一位成员')} 回复，初始使用模型默认强度。</p>`}
     <div class="sc-subsection-head"><h2>协作成员</h2><button type="button" data-action="reload-catalog">刷新模型与技能</button></div>
     <p class="sc-small sc-muted">新模型先在 DSH 的模型设置中配置供应商，再刷新目录。其他 Agent 先启用其 DSH 接入插件，再选择接入名称。</p>
     <datalist id="sc-agent-backends">${(catalog.agentBackends || []).map(backend => `<option value="${escapeHtml(backend.id)}">${escapeHtml(backend.label)}</option>`).join('')}</datalist>
-    <div class="sc-roster">${members}<button type="button" class="sc-add-member" data-action="add-agent" ${agents.length >= 64 ? 'disabled' : ''}>＋ 添加成员</button></div>
+    ${bulkControl(saved.agents, catalog, bulk)}
+    <div class="sc-roster">${members}<button type="button" class="sc-add-member" data-action="add-agent" ${agents.length >= 128 ? 'disabled' : ''}>＋ 添加成员</button></div>
     <div class="sc-save-row"><button type="button" class="sc-primary" data-action="save-team">保存设置</button><span class="sc-small sc-muted">强度和扩展档位用于后续步骤；模型、角色与技能用于下一轮任务。</span></div>
     ${catalog.errors.length ? `<p class="sc-small sc-muted">${escapeHtml(catalog.errors.join('。'))}</p>` : ''}
   </section>`

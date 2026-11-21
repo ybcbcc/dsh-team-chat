@@ -1,23 +1,20 @@
-/** Native DSH registration. The panel and browser share workbench.js. */
+/** Native Conversation view and browser entry share workbench.js. */
 window.__ModuleLoader__.load({
   id: '@local/dsh-codex-chat',
   factory(require) {
     const React = require('react')
+    const { createPortal } = require('react-dom')
     const h = React.createElement
-    const PANEL_ID = '@local/dsh-codex-chat'
+    const VIEW_ID = 'codex-chat'
     const NS = 'codexChat'
     const dictionaries = {
-      en: { 'type.label': 'Scenario team', 'guide.title': 'Scenario collaboration', 'guide.description': 'Work with Codex and DeepSeek in a team with scenario memory' },
-      zh: { 'type.label': '场景协作', 'guide.title': '场景协作', 'guide.description': '与 Codex、DeepSeek 团队协作，持续积累场景记忆' },
+      en: { 'type.label': 'Scenario team' },
+      zh: { 'type.label': '场景协作' },
     }
 
     function report(error) {
       void fetch('/codex-chat/log', { method: 'POST', headers: { 'content-type': 'text/plain' },
         body: `workbench client: ${error?.stack || error}` }).catch(() => {})
-    }
-
-    function GuideIcon(props) {
-      return h('span', { ...props, 'aria-hidden': true }, '⇄')
     }
 
     class Boundary extends React.Component {
@@ -35,14 +32,8 @@ window.__ModuleLoader__.load({
 
     function Body(props) {
       const root = React.useRef(null)
-      const info = typeof props.useTabInfo === 'function' ? props.useTabInfo() : undefined
-      const infoRef = React.useRef(info)
-      infoRef.current = info
       const cwd = props.useSessions ? props.useSessions(sessions => sessions.byId[props.sessionId]?.cwd) : undefined
       const sessionTitle = props.useSessions ? props.useSessions(sessions => sessions.byId[props.sessionId]?.title) : undefined
-      React.useEffect(() => {
-        root.current?.dispatchEvent(new Event('sc-layout-change'))
-      }, [info?.sidebar.fullscreen])
       React.useEffect(() => {
         let disposed = false
         let unmount
@@ -50,23 +41,16 @@ window.__ModuleLoader__.load({
         link.rel = 'stylesheet'
         link.href = `/codex-chat/assets/workbench.css?v=${Date.now()}`
         document.head.appendChild(link)
-        const expand = automatic => {
-          if (automatic && infoRef.current?.sidebar.fullscreen) return
-          const target = props.sidebar.commandTarget(root.current)
-          if (target) props.sidebar.toggleFullscreen(target)
-        }
         import(`/codex-chat/assets/workbench.js?v=${Date.now()}`).then(async module => {
           if (disposed) return
           const cleanup = await module.mountWorkbench(root.current, {
             sessionId: props.sessionId, sessionTitle, cwd,
             pickDirectory: async () => globalThis.__DSH_DIRECTORY_PICKER__?.pick(),
-            onExpand: () => expand(false), onRunStart: () => expand(true),
             openSession: sessionId => {
               if (!props.navigation.openSession) return false
               props.navigation.openSession(sessionId)
               return true
             },
-            isExpanded: () => infoRef.current?.sidebar.fullscreen === true,
           })
           if (disposed) cleanup()
           else unmount = cleanup
@@ -79,12 +63,21 @@ window.__ModuleLoader__.load({
           unmount?.()
           link.remove()
         }
-      }, [props.sessionId, cwd, props.sidebar])
-      return h('div', { ref: root, style: { height: '100%', minHeight: 0, containerType: 'inline-size', containerName: 'scenario-workspace' } })
+      }, [props.sessionId, sessionTitle, cwd])
+      return h('div', { ref: root, 'data-scenario-conversation': '' })
+    }
+
+    function BlankSessionEntry(props) {
+      const [container, setContainer] = React.useState(null)
+      const body = container && createPortal(h('div', { className: 'sc-blank-session' },
+        h('button', { type: 'button', onClick: () => setContainer(null) }, '返回内置对话'),
+        h(Boundary, null, h(Body, props))), container)
+      return h(React.Fragment, null,
+        h('button', { type: 'button', onClick: event => setContainer(event.currentTarget.closest('[data-conversation-scroll]')) }, props.label), body)
     }
 
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs', 'sidebarRight'],
+      inject: ['slots', 'locale', 'uiConversation'],
       apply(ctx) {
         const navigation = {}
         ctx.inject(['uiWorkspace'], inner => {
@@ -93,15 +86,16 @@ window.__ModuleLoader__.load({
         })
         const t = ctx.locale.bind(NS)
         ctx.effect(() => ctx.locale.register(NS, dictionaries), 'codex-chat: dictionaries')
-        ctx.effect(() => ctx.sidebarRightTabs.register({
-          id: PANEL_ID, kind: 'codex-chat', priority: 'extension', title: () => t('type.label'),
-          guide: [{ id: 'panel', order: 12, title: () => t('guide.title'), description: () => t('guide.description'), icon: GuideIcon }],
-        }), 'codex-chat: tab type')
-        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-          name: 'sidebar.right.pane.tab', key: PANEL_ID, locale: NS,
-        }, function PanelBody(props) {
-          return h(Boundary, null, h(Body, { ...props, sidebar: ctx.sidebarRight, navigation }))
-        })), 'codex-chat: tab body')
+        ctx.effect(() => ctx.slots.inject('conversation.view', () => ctx.slots.register({
+          name: 'conversation.view', id: VIEW_ID, order: 5, locale: NS, label: () => t('type.label'),
+        }, function ConversationView(props) {
+          return h(Boundary, null, h(Body, { ...props, navigation }))
+        })), 'codex-chat: Conversation view')
+        ctx.effect(() => ctx.slots.inject('conversation.hero.options', () => ctx.slots.register({
+          name: 'conversation.hero.options', id: VIEW_ID, locale: NS,
+        }, function HeroEntry(props) {
+          return h(BlankSessionEntry, { ...props, navigation, label: t('type.label') })
+        })), 'codex-chat: blank Conversation entry')
       },
     }
   },

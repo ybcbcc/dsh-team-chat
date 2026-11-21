@@ -158,9 +158,13 @@ export class RunCoordinator {
     const ownerId = previous?.ownerId && scene.agents.some(agent => agent.id === previous.ownerId) ? previous.ownerId : scene.ownerId
     if (mode === 'confidence' && scene.agents.length < 2) throw new Error('置信协作需要至少两位成员')
     if (mode === 'orchestration' && !auto && !scene.agents.some(agent => agent.id === ownerId)) throw new Error('请先选择本次任务的 Owner')
+    const first = scene.agents[0]
+    const dailyPreference = scene.dailyEffort
+    const dailyEffort = dailyPreference && ['id', 'engine', 'model', 'provider', 'agentProvider'].every(
+      key => (dailyPreference[key] || '') === (first[key] || '')) ? dailyPreference.effort : ''
     const run = {
       id: randomUUID(), scenarioId: scene.id, sessionId, dshSessionId, requestId, text, attachments,
-      mode, ownerId, agents: structuredClone(scene.agents),
+      mode, ownerId, agents: mode === 'daily' ? [{ ...structuredClone(first), effort: dailyEffort, variants: [] }] : structuredClone(scene.agents),
       scene: structuredClone(scene), state: 'queued', tasks: [], reviews: [],
       createdAt: timestamp(), resumeRunId: previous?.id,
       resumeContext: previous && (mode !== 'orchestration' || !previous.delegations?.length) ? this.resumeContext(previous) : '',
@@ -316,6 +320,7 @@ export class RunCoordinator {
   async perform(run, signal) {
     try {
       if (run.mode === 'orchestration') await this.orchestrate(run, signal)
+      else if (run.mode === 'daily') await this.daily(run, signal)
       else await this.verify(run, signal)
     } catch (error) {
       if (this.disposed) return
@@ -341,10 +346,17 @@ export class RunCoordinator {
 
   currentHistory(run) {
     const summary = this.store.sessionSummary?.(run.scenarioId, run.sessionId)
-    const messages = this.store.messages(run.scenarioId, undefined, 16, run.sessionId)
-      .filter(message => !message.agentId && message.runId !== run.id && message.seq > (summary?.lastMessageSeq || 0))
+    const messages = this.store.messages(run.scenarioId, undefined, 16, run.sessionId, { mainOnly: true })
+      .filter(message => message.runId !== run.id && message.seq > (summary?.lastMessageSeq || 0))
       .map(message => `${message.role === 'user' ? '用户' : '团队'} ${message.text.slice(0, 2000)}`).join('\n')
     return [summary?.content ? `本会话工作摘要：\n${summary.content}` : '', messages].filter(Boolean).join('\n\n')
+  }
+
+  memberHistory(run, agent) {
+    return this.store.messages(run.scenarioId, undefined, 20, run.sessionId, { agentId: agent.id })
+      .filter(message => !message.error)
+      .map(message => `${message.role === 'relay' ? '协作调度' : agent.name}（${message.stage}）：${message.text.slice(0, 1800)}`)
+      .join('\n\n')
   }
 
   async call(run, agent, stage, instruction, signal, {
@@ -355,6 +367,7 @@ export class RunCoordinator {
     agent = effectiveAgent || executionAgent(agent, variantId ?? run.profileOverrides?.[agent.id] ?? '')
     readOnly = readOnly || agent.permission === 'read-only'
     const scene = run.scene
+    const daily = run.mode === 'daily'
     const selected = initialContext?.memory || relevantMemories(this.store.memories(scene.id),
       `${run.text}\n${brief(instruction, 3000)}`, 2400, agent.roleId || agent.id)
     const history = includeHistory ? initialContext?.history ?? this.currentHistory(run) : ''
@@ -362,7 +375,7 @@ export class RunCoordinator {
     const duty = initialContext ? '独立核实本轮问题，使用共同提供的资料并留下证据' : agent.role
     const coordination = workflowTaskId ? '只与 Owner 协作。需要其他成员信息时在转发请求中说明，由 Owner 处理。' : ''
     const items = [
-      { category: 'role', label: '角色与协作规则', content: `你是 ${agent.name}，职责为 ${duty}。当前阶段为 ${stage}。围绕本轮任务的验收要求开展工作，历史消息提供背景，最终回答遵循本轮用户要求。${coordination}${readOnly ? '本阶段进行读取、调研和审查，所有实际修改交由执行阶段。' : '按用户任务及已有授权执行，核对实际结果。'}\n${OUTPUT_CONTRACT}`, source: { type: 'agent', id: agent.id, revision: scene.revision } },
+      { category: 'role', label: '角色与协作规则', content: `你是 ${agent.name}，职责为 ${duty}。当前阶段为 ${stage}。围绕本轮任务的验收要求开展工作，历史消息提供背景，最终回答遵循本轮用户要求。${coordination}${daily ? '直接用自然语言回答用户，必要时使用 Markdown。' : `${readOnly ? '本阶段进行读取、调研和审查，所有实际修改交由执行阶段。' : '按用户任务及已有授权执行，核对实际结果。'}\n${OUTPUT_CONTRACT}`}`, source: { type: 'agent', id: agent.id, revision: scene.revision } },
       { category: 'scene', label: '场景概况', content: `${scene.title}\n${scene.brief || ''}\n工作区 ${scene.cwd}`, source: { type: 'scenario', id: scene.id, revision: scene.revision } },
       { category: 'task', label: '本轮任务', content: `${run.text}\n\n${instruction}`, source: { type: 'message', id: run.userMessageId } },
       ...selected.map(entry => ({ category: 'memory', label: entry.title,
@@ -372,6 +385,11 @@ export class RunCoordinator {
       ...handoffs.map(message => ({ category: 'handoff', label: message.label, content: message.content, source: message.source })),
     ]
     if (history) items.push({ category: 'history', label: '近期主聊天', content: history, source: { type: 'history', scenarioId: scene.id } })
+    if (run.mode !== 'orchestration') {
+      const transcript = this.memberHistory(run, agent)
+      if (transcript) items.push({ category: 'history', label: '本会话中的成员对话', content: transcript,
+        source: { type: 'history', scenarioId: scene.id, agentId: agent.id } })
+    }
     if (includeHistory && run.resumeContext) items.push({ category: 'history', label: '中断任务接续', content: run.resumeContext, source: { type: 'run', id: run.resumeRunId } })
     if (run.attachments.length) items.push({ category: 'attachment', label: '本轮附件', content: run.attachments.map(file => `${file.name} ${file.path}`).join('\n'), source: { type: 'attachment', files: run.attachments } })
     const prompt = items.map(item => `## ${item.label}\n${item.content}`).join('\n\n')
@@ -417,22 +435,28 @@ export class RunCoordinator {
           this.store.updateContext(context.id, { threadId: payload.threadId,
             effectiveConfig: { model: task.model, provider: task.provider, effort: task.effort, permission: payload.permission || agent.permission || 'default', readOnly, routingReason: agent.routingReason } })
         }
-        if (type === 'context.changed' && /compact|prune/.test(payload.kind || '')) this.memoryCompiler?.request(run, 'compaction')
+        if (!daily && type === 'context.changed' && /compact|prune/.test(payload.kind || '')) this.memoryCompiler?.request(run, 'compaction')
         const input = normalizedUsage(payload.usage, agent.engine)?.input
         if (!contextLimitRequested && Number.isFinite(input) && payload.contextWindow > 0 && input >= payload.contextWindow * 0.75) {
           contextLimitRequested = true
-          this.memoryCompiler?.request(run, 'context-limit')
+          if (!daily) this.memoryCompiler?.request(run, 'context-limit')
         }
       },
       })
     }
     try {
+      if (run.mode === 'confidence') {
+        const dispatch = this.store.addMessage({ scenarioId: scene.id, sessionId: run.sessionId, runId: run.id,
+          agentId: agent.id, operationId, role: 'relay', stage, text: this.confidenceRequest(run, stage, handoffs) })
+        this.emit(run, 'message.added', { message: dispatch })
+      }
       this.emit(run, 'agent.started', { agentId: agent.id, operationId, stage })
       const result = readOnly ? await execute() : await this.serialWrite(scene.cwd, execute, signal)
       signal.throwIfAborted()
       raw = result.answer || ''
       if (result.status && result.status !== 'completed') throw new Error(`${agent.name} 未完成本阶段，状态 ${result.status}${result.diagnostic ? `。${result.diagnostic}` : ''}`)
-      const parsed = parseResult(raw)
+      if (!raw.trim()) throw new Error(`${agent.name} 未返回回复`)
+      const parsed = daily ? { answer: raw } : parseResult(raw)
       const roleCandidates = Array.isArray(parsed.memoryCandidates)
         ? parsed.memoryCandidates.filter(candidate => candidate.audience === 'role') : []
       const message = this.store.addMessage({ scenarioId: scene.id, sessionId: run.sessionId, runId: run.id, agentId: agent.id, agentName: agent.name,
@@ -468,15 +492,45 @@ export class RunCoordinator {
     }
   }
 
+  confidenceRequest(run, stage, handoffs) {
+    const requests = { 独立处理: '请独立回答这个问题，并说明主要依据。', 补充核实: '请根据审查意见补充核实，并更新你的结论。',
+      执行已验证方案: '请执行已核对的方案，并回复实际结果。', 统一结论: '请综合各成员的结果，给出一份回复。',
+      统一稿审查: '请核对统一稿及其依据，回复审查结论。' }
+    const request = requests[stage] || '请核对其他成员的结论和依据，回复你的审查结论。'
+    const notes = handoffs.map(item => {
+      const name = run.agents.find(agent => agent.id === item.source.agentId)?.name
+      return item.summary ? `${name || '成员'}：${item.summary}` : ''
+    }).filter(Boolean)
+    return [request, stage === '独立处理' ? run.text : '', ...notes].filter(Boolean).join('\n\n')
+  }
+
+  async daily(run, signal) {
+    const member = run.agents[0]
+    this.update(run, 'working')
+    const result = await this.call(run, member, '日常对话', '请回答当前消息，延续本会话的上下文。', signal)
+    this.finish(run, 'completed', result.answer)
+  }
+
   handoff(result, label) {
-    return { label, content: JSON.stringify(result), source: { type: 'agent-message', agentId: result.agentId, id: result.messageId } }
+    return { label, content: JSON.stringify(result), summary: brief(result.answer || result.summary, 420),
+      source: { type: 'agent-message', agentId: result.agentId, id: result.messageId } }
   }
 
   async collect(run, agents, stage, instruction, signal, options) {
-    const results = await Promise.allSettled(agents.map(agent => this.call(run, agent, stage, instruction, signal, options)))
+    const results = new Array(agents.length)
+    let next = 0
+    // A bulk roster can include dozens of Codex app-server processes.
+    const workers = Array.from({ length: Math.min(6, agents.length) }, async () => {
+      while (next < agents.length && !signal.aborted) {
+        const index = next++
+        const agent = agents[index]
+        try { results[index] = await this.call(run, agent, stage, instruction, signal, options) }
+        catch (error) { results[index] = { agentId: agent.id, error: error.message } }
+      }
+    })
+    await Promise.all(workers)
     signal.throwIfAborted()
-    return results.map((result, index) => result.status === 'fulfilled'
-      ? result.value : { agentId: agents[index].id, error: result.reason.message })
+    return results
   }
 
   async verify(run, signal) {
@@ -1179,12 +1233,14 @@ export class RunCoordinator {
     run.questions = []
     this.store.transaction(() => {
       const message = this.store.addMessage({ scenarioId: run.scenarioId, sessionId: run.sessionId, runId: run.id, role: 'assistant', text: answer, summary, state,
-        agentName: run.mode === 'orchestration' ? run.agents.find(agent => agent.id === run.ownerId)?.name : '统一结论' })
+        agentName: run.mode === 'daily' ? run.agents[0]?.name
+          : run.mode === 'orchestration' ? run.agents.find(agent => agent.id === run.ownerId)?.name : '统一结论' })
       this.emit(run, 'message.added', { message })
       if (state === 'completed') this.consolidate(run, [...(Array.isArray(candidates) ? candidates : []).map(candidate => ({ ...candidate, sourceMessageId: message.id })), ...(run.roleMemoryCandidates || [])])
       this.store.saveRun(run)
       this.emit(run, 'run.finished', { run })
     })
+    if (run.mode === 'daily') return
     if (state === 'completed') this.memoryCompiler?.request(run, 'run-complete')
     else if (state === 'incomplete' || state === 'failed' || state === 'disputed') this.memoryCompiler?.request(run, 'run-incomplete')
   }
@@ -1248,12 +1304,12 @@ export class RunCoordinator {
 
   syncProfiles(scene) {
     for (const { run } of this.active.values()) {
-      if (run.scenarioId !== scene.id) continue
+      if (run.scenarioId !== scene.id || run.mode === 'daily') continue
       for (const member of run.agents) {
         const current = scene.agents.find(agent => agent.id === member.id)
         if (!current || current.engine !== member.engine || current.model !== member.model || current.provider !== member.provider
           || (current.agentProvider || '') !== (member.agentProvider || '')) continue
-        member.effort = current.effort
+        if (!member.composerEffort) member.effort = current.effort
         // Pending assignments can still refer to a profile removed from team settings.
         member.variants = [...new Map([...(member.variants || []), ...(current.variants || [])].map(variant => [variant.id, structuredClone(variant)])).values()]
       }
